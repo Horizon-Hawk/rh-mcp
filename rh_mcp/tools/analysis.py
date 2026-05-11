@@ -31,6 +31,7 @@ def _run_script(script_name: str, args: list[str], timeout: int = 60) -> dict:
         result = subprocess.run(
             [sys.executable, str(script_path), *args],
             capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except subprocess.TimeoutExpired:
