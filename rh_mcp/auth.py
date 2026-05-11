@@ -30,14 +30,20 @@ _LOGGED_IN: bool = False
 
 
 def _config_path() -> Path:
-    """Resolve config path: env var first, then cwd, then package dir."""
+    """Resolve config path: env var first (if file exists), then cwd, then package dir.
+
+    If RH_CONFIG_PATH is set but the file doesn't exist, fall through to candidates
+    rather than locking the user into a bad path. Common cause: backslashes stripped
+    by a JSON writer (`C:Usersfoo` instead of `C:\\Users\\foo`).
+    """
+    candidates = []
     env_path = os.environ.get("RH_CONFIG_PATH")
     if env_path:
-        return Path(env_path)
-    candidates = [
+        candidates.append(Path(env_path))
+    candidates.extend([
         Path.cwd() / "rh_config.json",
         Path(__file__).parent.parent / "rh_config.json",
-    ]
+    ])
     for p in candidates:
         if p.exists():
             return p
@@ -45,14 +51,23 @@ def _config_path() -> Path:
 
 
 def load_config() -> dict:
-    """Load and cache rh_config.json."""
+    """Load and cache rh_config.json.
+
+    Raises RuntimeError (not SystemExit) on missing config — SystemExit inside a
+    lazily-invoked tool call would kill the MCP server subprocess, leaving the
+    client to see "server disconnected" with no diagnostic.
+    """
     global _CONFIG_CACHE
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
     path = _config_path()
     if not path.exists():
-        raise SystemExit(
-            f"rh_config.json not found at {path}. "
+        env_hint = (
+            f" (RH_CONFIG_PATH={os.environ['RH_CONFIG_PATH']!r})"
+            if os.environ.get("RH_CONFIG_PATH") else ""
+        )
+        raise RuntimeError(
+            f"rh_config.json not found at {path}{env_hint}. "
             f"Copy rh_config.example.json to rh_config.json and fill in your credentials."
         )
     _CONFIG_CACHE = json.loads(path.read_text(encoding="utf-8"))
