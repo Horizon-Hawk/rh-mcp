@@ -144,9 +144,12 @@ def get_portfolio_history(
         bounds: 'regular' (RTH only) | 'extended' (incl. AH).
     """
     rh = client()
-    acct = account_number or default_account()
+    # NOTE: robin_stocks.get_historical_portfolio() does NOT accept an account_number kwarg —
+    # it uses the default account internally. The account_number arg on this MCP tool is
+    # accepted for API uniformity but currently has no effect.
+    _ = account_number or default_account()
     raw = rh.get_historical_portfolio(
-        account_number=acct, interval=interval, span=span, bounds=bounds,
+        interval=interval, span=span, bounds=bounds,
     )
     if not raw:
         return {"success": False, "error": "no historical data"}

@@ -18,6 +18,7 @@ def _run_logger(args: list[str], timeout: int = 30) -> dict:
         result = subprocess.run(
             [sys.executable, str(script), *args],
             capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except Exception as e:
@@ -143,6 +144,7 @@ def trade_stats() -> dict:
         result = subprocess.run(
             [sys.executable, str(script)],
             capture_output=True, text=True, timeout=30,
+            stdin=subprocess.DEVNULL,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except Exception as e:
