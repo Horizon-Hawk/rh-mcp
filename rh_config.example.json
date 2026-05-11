@@ -1,0 +1,7 @@
+{
+  "username": "your-robinhood-email@example.com",
+  "password": "your-robinhood-password",
+  "default_account": "YOUR_ACCOUNT_NUMBER",
+  "mfa_secret": "OPTIONAL_BASE32_TOTP_SECRET_FOR_UNATTENDED_MFA",
+  "notes": "Copy this file to rh_config.json and fill in your credentials. NEVER commit rh_config.json — it is in .gitignore. mfa_secret is the base32 secret shown when you set up your authenticator app (the underlying secret, not the 6-digit code). With pyotp installed, the server generates codes automatically. If omitted, robin-stocks prompts interactively."
+}

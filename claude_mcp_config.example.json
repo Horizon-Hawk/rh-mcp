@@ -1,0 +1,10 @@
+{
+  "_comment": "Add this snippet to your Claude Code MCP settings. The actual file location is typically ~/.claude/settings.json under the 'mcpServers' key. Replace the cwd path with the absolute path where you cloned rh-mcp.",
+  "mcpServers": {
+    "rh-mcp": {
+      "command": "python",
+      "args": ["-m", "rh_mcp.server"],
+      "cwd": "C:\\Users\\<your-windows-username>\\TraderMCP-RH"
+    }
+  }
+}
