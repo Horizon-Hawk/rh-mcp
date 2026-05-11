@@ -74,7 +74,7 @@ Robinhood does NOT expose a public API endpoint for SETTING price alerts. `get_n
 
 | Tool | Notes |
 |------|-------|
-| `place_with_bracket` | ATOMIC: entry + stop-loss + limit target in one call |
+| ~~`place_with_bracket`~~ | NOT POSSIBLE — RH does not support OCO brackets. Shipped `place_with_stop` (entry + fixed stop) and `place_with_trailing_stop` (entry + trail) instead; take-profit handled via partial-exit framework. |
 | `order_book_scan` | Wrap order_book.py with OBI signal |
 | `stack_grade` | Wrap stack_grade.py (float + RV + news combined) |
 | `historicals` | Wrap historicals.py (breakout grade, MM target, stop suggestion) |
