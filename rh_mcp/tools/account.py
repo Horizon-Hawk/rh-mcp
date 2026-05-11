@@ -86,6 +86,9 @@ def get_open_orders(account_number: str | None = None) -> dict:
         if o.get("instrument"):
             inst = rh.get_instrument_by_url(o["instrument"])
             sym = (inst or {}).get("symbol")
+        trailing_peg = o.get("trailing_peg")
+        last_trail = o.get("last_trail_price")
+        last_trail_amt = _to_float(last_trail.get("amount")) if isinstance(last_trail, dict) else None
         orders.append({
             "id": o.get("id"),
             "symbol": sym,
@@ -95,6 +98,8 @@ def get_open_orders(account_number: str | None = None) -> dict:
             "stop_price": _to_float(o.get("stop_price")),
             "type": o.get("type"),
             "trigger": o.get("trigger"),
+            "trailing_peg": trailing_peg,
+            "last_trail_price": last_trail_amt,
             "time_in_force": o.get("time_in_force"),
             "state": o.get("state"),
             "extended_hours": o.get("extended_hours"),
