@@ -42,6 +42,25 @@ def get_open_orders(account_number: str | None = None) -> dict:
 
 
 @mcp.tool()
+def get_option_positions(account_number: str | None = None) -> dict:
+    """All open option contract positions: ticker, expiry, strike, type,
+    contracts held, avg cost, mark, P&L. The portfolio summary's
+    `build_holdings` excludes options — this is the only way to see
+    contract holdings from the API.
+    """
+    return account.get_option_positions(account_number)
+
+
+@mcp.tool()
+def get_open_option_orders(account_number: str | None = None) -> dict:
+    """All pending option orders (single-leg and multi-leg spreads). Each
+    leg is enriched with strike/expiry/option_type so you can read the
+    pending exposure without separately resolving instrument URLs.
+    """
+    return account.get_open_option_orders(account_number)
+
+
+@mcp.tool()
 def list_accounts() -> dict:
     """List linked Robinhood accounts."""
     return account.list_accounts()
@@ -167,20 +186,38 @@ def adjust_trailing_stop(ticker: str, new_trail_percent: float, account_number: 
 
 @mcp.tool()
 def cancel_order(order_id: str) -> dict:
-    """Cancel a specific open stock order."""
+    """Cancel a specific open order. Auto-detects stock vs option from the ID."""
     return orders.cancel_order(order_id)
 
 
 @mcp.tool()
+def cancel_option_order(order_id: str) -> dict:
+    """Cancel a specific open OPTION order. Explicit alternative to
+    cancel_order's auto-dispatch — skips the stock-first probe.
+    """
+    return orders.cancel_option_order(order_id)
+
+
+@mcp.tool()
 def cancel_all_orders(account_number: str | None = None) -> dict:
-    """Cancel ALL open stock orders. Use with caution."""
+    """Cancel ALL open orders — both stock and option. Use with caution."""
     return orders.cancel_all_orders(account_number)
 
 
 @mcp.tool()
 def get_order_status(order_id: str) -> dict:
-    """Status of a specific order: state, fills, prices."""
+    """Status of a specific order: state, fills, prices. Auto-detects stock
+    vs option from the ID (tries stock first, falls back to option).
+    """
     return orders.get_order_status(order_id)
+
+
+@mcp.tool()
+def get_option_order_status(order_id: str) -> dict:
+    """Status of a specific OPTION order including all legs and per-leg
+    fills. Explicit alternative to get_order_status's auto-dispatch.
+    """
+    return orders.get_option_order_status(order_id)
 
 
 # ---------------------------------------------------------------------------

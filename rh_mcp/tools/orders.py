@@ -675,39 +675,134 @@ def place_with_trailing_stop(
 # ---------------------------------------------------------------------------
 
 def cancel_order(order_id: str) -> dict:
-    """Cancel a single open stock order by ID."""
+    """Cancel a single open order by ID. Auto-detects whether the ID is a
+    stock or option order: tries stock cancel first, falls back to option
+    cancel on not-found. Explicit callers can use `cancel_option_order`
+    directly to skip the fallback path.
+    """
     rh = client()
-    result = rh.cancel_stock_order(order_id)
+    # Stock first — by far the more common case
+    try:
+        result = rh.cancel_stock_order(order_id)
+    except Exception:
+        result = None
+    if result is not None:
+        return {"success": True, "order_id": order_id, "kind": "stock", "raw": result}
+    # Fall back to option
+    try:
+        result = rh.orders.cancel_option_order(order_id)
+    except Exception:
+        result = None
+    if result is not None:
+        return {"success": True, "order_id": order_id, "kind": "option", "raw": result}
+    return {"success": False, "error": "cancel failed — order not found as stock or option"}
+
+
+def cancel_option_order(order_id: str) -> dict:
+    """Cancel a single open OPTION order by ID. Explicit alternative to
+    cancel_order's auto-dispatch — use when you already know the order is
+    an option order and want to skip the stock-first probe."""
+    rh = client()
+    try:
+        result = rh.orders.cancel_option_order(order_id)
+    except Exception as e:
+        return {"success": False, "error": f"option cancel failed: {e}"}
     if result is None:
-        return {"success": False, "error": "cancel failed (order may not exist)"}
+        return {"success": False, "error": "option cancel failed — order may not exist"}
     return {"success": True, "order_id": order_id, "raw": result}
 
 
 def cancel_all_orders(account_number: str | None = None) -> dict:
-    """Cancel ALL open stock orders. Use with caution."""
+    """Cancel ALL open orders — both stock and option. Use with caution."""
     rh = client()
-    result = rh.cancel_all_stock_orders()
-    return {"success": True, "cancelled": result}
+    stock_result = rh.cancel_all_stock_orders()
+    option_result = None
+    try:
+        option_result = rh.orders.cancel_all_option_orders()
+    except Exception as e:
+        option_result = {"error": str(e)}
+    return {"success": True, "stock_cancelled": stock_result, "option_cancelled": option_result}
+
+
+def _option_order_summary(info: dict) -> dict:
+    """Common-shape summary for an option order — used by both
+    get_option_order_status and the auto-dispatch fallback in get_order_status."""
+    legs = []
+    for leg in (info.get("legs") or []):
+        opt_url = leg.get("option") or ""
+        opt_id = opt_url.rstrip("/").rsplit("/", 1)[-1] or None if opt_url else None
+        executions = leg.get("executions") or []
+        filled_qty = sum(_to_float(ex.get("quantity")) or 0 for ex in executions)
+        legs.append({
+            "option_id": opt_id,
+            "side": leg.get("side"),
+            "position_effect": leg.get("position_effect"),
+            "ratio_quantity": leg.get("ratio_quantity"),
+            "filled_quantity": filled_qty or None,
+        })
+    return {
+        "success": True,
+        "kind": "option",
+        "order_id": info.get("id"),
+        "state": info.get("state"),
+        "type": info.get("type"),
+        "direction": info.get("direction"),
+        "ticker": info.get("chain_symbol"),
+        "quantity": _to_float(info.get("quantity")),
+        "processed_quantity": _to_float(info.get("processed_quantity")),
+        "price": _to_float(info.get("price")),
+        "premium": _to_float(info.get("premium")),
+        "processed_premium": _to_float(info.get("processed_premium")),
+        "time_in_force": info.get("time_in_force"),
+        "trigger": info.get("trigger"),
+        "created_at": info.get("created_at"),
+        "updated_at": info.get("updated_at"),
+        "legs": legs,
+    }
+
+
+def get_option_order_status(order_id: str) -> dict:
+    """Get status of a specific OPTION order by ID."""
+    rh = client()
+    try:
+        info = rh.orders.get_option_order_info(order_id)
+    except Exception as e:
+        return {"success": False, "error": f"option order lookup failed: {e}"}
+    if not info:
+        return {"success": False, "error": "option order not found"}
+    return _option_order_summary(info)
 
 
 def get_order_status(order_id: str) -> dict:
-    """Get status of a specific stock order."""
+    """Get status of a specific order. Auto-detects stock vs option by ID:
+    tries the stock endpoint first, falls back to option on not-found.
+    Use `get_option_order_status` directly if you already know it's an
+    option order and want to skip the probe.
+    """
     rh = client()
     info = rh.get_stock_order_info(order_id)
-    if not info:
-        return {"success": False, "error": "order not found"}
-    return {
-        "success": True,
-        "order_id": info.get("id"),
-        "state": info.get("state"),
-        "side": info.get("side"),
-        "type": info.get("type"),
-        "trigger": info.get("trigger"),
-        "quantity": _to_float(info.get("quantity")),
-        "cumulative_quantity": _to_float(info.get("cumulative_quantity")),
-        "price": _to_float(info.get("price")),
-        "stop_price": _to_float(info.get("stop_price")),
-        "average_price": _to_float(info.get("average_price")),
-        "created_at": info.get("created_at"),
-        "updated_at": info.get("updated_at"),
-    }
+    if info:
+        return {
+            "success": True,
+            "kind": "stock",
+            "order_id": info.get("id"),
+            "state": info.get("state"),
+            "side": info.get("side"),
+            "type": info.get("type"),
+            "trigger": info.get("trigger"),
+            "quantity": _to_float(info.get("quantity")),
+            "cumulative_quantity": _to_float(info.get("cumulative_quantity")),
+            "price": _to_float(info.get("price")),
+            "stop_price": _to_float(info.get("stop_price")),
+            "average_price": _to_float(info.get("average_price")),
+            "created_at": info.get("created_at"),
+            "updated_at": info.get("updated_at"),
+        }
+    # Fall back to option lookup
+    try:
+        opt_info = rh.orders.get_option_order_info(order_id)
+    except Exception:
+        opt_info = None
+    if opt_info:
+        return _option_order_summary(opt_info)
+    return {"success": False, "error": "order not found as stock or option"}
