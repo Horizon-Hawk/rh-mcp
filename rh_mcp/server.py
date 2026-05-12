@@ -395,6 +395,15 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
+    """EMERGENCY CLOSE a futures position via market order. RH auto-determines
+    side and quantity from current position. Fills at whatever price the book offers.
+    For orderly exits prefer place_futures_order with LIMIT.
+    """
+    return scanners.flatten_futures_position(contract_uuid=contract_uuid, account_id=account_id)
+
+
+@mcp.tool()
 def place_futures_order(
     contract_uuid: str,
     side: str,

@@ -192,6 +192,22 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
+    """Emergency close a futures position via market order. RH auto-determines
+    side (sell longs / cover shorts) and quantity from current position. Fires
+    POST /ceres/v1/accounts/{id}/flatten_position.
+
+    IMPORTANT: places a MARKET order — fills at whatever price the book offers.
+    Use only when you want immediate exit; for orderly exits use place_futures_order
+    with a LIMIT instead.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        return fc.flatten_position(contract_uuid=contract_uuid, account_id=account_id)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def place_futures_order(
     contract_uuid: str,
     side: str,

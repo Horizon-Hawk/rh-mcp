@@ -353,6 +353,46 @@ def cancel_order(order_id: str) -> dict:
     raise NotImplementedError("Cancel endpoint not yet captured from web app.")
 
 
+def flatten_position(contract_uuid: str, account_id: str | None = None) -> dict:
+    """Emergency close a futures position via market order.
+
+    POSTs to /ceres/v1/accounts/{id}/flatten_position. RH auto-determines side
+    (sell longs / cover shorts) and quantity from the current position — caller
+    only specifies the contract.
+
+    IMPORTANT: this places a MARKET order to close. Will fill at whatever price
+    the book offers. Use only when you want immediate exit (bail signal, stop
+    breach, etc.) — for orderly exits use place_order with a LIMIT instead.
+
+    Returns {http_status, request_body, response}.
+    """
+    import uuid as _uuid
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        raise RuntimeError("No futures account ID available.")
+    body = {
+        "contractId": contract_uuid,
+        "refId": str(_uuid.uuid4()),
+    }
+    headers = {
+        "content-type": "application/json",
+        "rh-contract-protected": "true",
+        "x-robinhood-client-platform": "black-widow",
+    }
+    url = f"{CERES_BASE}/accounts/{account_id}/flatten_position"
+    r = rhh.SESSION.post(url, json=body, headers=headers, timeout=15)
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"raw_text": r.text}
+    return {
+        "http_status": r.status_code,
+        "request_body": body,
+        "response": payload,
+    }
+
+
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     """Per-category buying power breakdown including futures equity + margin held.
 
