@@ -386,6 +386,15 @@ def get_futures_orders(account_id: str | None = None, limit: int = 50) -> dict:
 
 
 @mcp.tool()
+def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
+    """Aggregated RH futures positions — per-contract roll-ups with P&L context.
+    Different from get_futures_positions(): aggregates multiple fills into a single
+    row per contract (matches the typical Positions view in RH web).
+    """
+    return scanners.get_futures_aggregated_positions(account_id)
+
+
+@mcp.tool()
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract (NQ, MNQ, ES, CL, GC etc.) via yfinance.
     Returns OHLCV bars suitable for backtesting and EOD analysis. RH's futures

@@ -182,6 +182,16 @@ def get_futures_orders(account_id: str | None = None, limit: int = 50) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
+    """Aggregated futures positions (per-contract roll-ups with P&L context)."""
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        positions = fc.get_aggregated_positions(account_id)
+        return {"success": True, "count": len(positions), "positions": positions}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract via yfinance (independent of RH).
 

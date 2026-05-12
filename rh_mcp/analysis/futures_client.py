@@ -158,6 +158,21 @@ def get_orders(account_id: str | None = None, limit: int = 50) -> list[dict]:
     return rows[:limit] if limit else rows
 
 
+def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
+    """Aggregated positions per contract with P&L / cost basis context.
+
+    Different from get_positions(): aggregated rolls multiple fills into a
+    single per-contract row (typical "Positions" view in RH web app).
+    """
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        return []
+    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/aggregated_positions", timeout=15)
+    r.raise_for_status()
+    return r.json().get("results", []) or []
+
+
 def get_contract_quantity(contract_uuid: str, account_id: str | None = None) -> dict:
     """Held / pending / net quantity for a specific futures contract."""
     if account_id is None:
