@@ -42,10 +42,17 @@ DEFAULT_CSV_PATH = _edgar.CACHE_DIR / "8k_history.csv"
 CSV_FIELDS = [
     "accession_no", "ticker", "cik", "filed_at", "filing_date",
     "item_codes", "body_keywords",
+    # Direction labels: same logic scan_8k uses at runtime — body keyword
+    # synthesis if confidence >= 0.7, else item-code classification.
+    "direction", "direction_confidence", "direction_source",
     "t0_close", "t1_close", "t5_close",
     "next_day_return", "five_day_return",
     "label_t1", "label_t5",
 ]
+
+# Mirrors scan_8k's LONG/SHORT_ITEM_CODES for the item-code fallback.
+_LONG_ITEM_CODES = {"1.01"}
+_SHORT_ITEM_CODES = {"3.02", "4.01", "4.02"}
 
 
 def _load_universe(path: Path) -> list[str]:
@@ -118,23 +125,53 @@ def _ticker_8ks(cik: str, start_date: date, end_date: date) -> list[dict]:
     return out
 
 
+def _item_code_direction(item_codes: list[str]) -> str | None:
+    items = set(item_codes)
+    if items & _LONG_ITEM_CODES:
+        return "long"
+    if items & _SHORT_ITEM_CODES:
+        return "short"
+    return None
+
+
 def _enrich_features(filing: dict, with_body_keywords: bool) -> dict:
-    """Fetch item codes (mandatory) and optionally body keyword features."""
+    """Fetch item codes (mandatory) and optionally body keyword features.
+    Also synthesizes a direction label using scan_8k's runtime logic so the
+    corpus can be backtested per-direction (long vs short subsets).
+    """
     try:
         items = _edgar.filing_items(filing["filing_url"])
     except Exception:
         items = []
     filing["item_codes"] = "|".join(items)
 
+    body_direction: str | None = None
+    body_confidence: float = 0.0
     if with_body_keywords and items:
         from rh_mcp.analysis import edgar_keywords as _kw
         try:
             hits = _kw.scan_filing_body(filing["filing_url"])
             filing["body_keywords"] = "|".join(sorted({h.pattern_name for h in hits}))
+            body_direction, body_confidence = _kw.synthesize_direction(hits)
         except Exception:
             filing["body_keywords"] = ""
     else:
         filing["body_keywords"] = ""
+
+    # Final direction: body if confidence >= 0.7 (matches scan_8k), else item code.
+    item_direction = _item_code_direction(items)
+    if body_direction in ("long", "short") and body_confidence >= 0.7:
+        filing["direction"] = body_direction
+        filing["direction_confidence"] = round(body_confidence, 3)
+        filing["direction_source"] = "body_keywords"
+    elif item_direction:
+        filing["direction"] = item_direction
+        filing["direction_confidence"] = 0.5  # item-code-only baseline confidence
+        filing["direction_source"] = "item_codes"
+    else:
+        filing["direction"] = ""
+        filing["direction_confidence"] = 0.0
+        filing["direction_source"] = ""
     return filing
 
 
@@ -286,6 +323,9 @@ def build_corpus(
                     "filing_date": f["filing_date"],
                     "item_codes": f["item_codes"],
                     "body_keywords": f["body_keywords"],
+                    "direction": f.get("direction", ""),
+                    "direction_confidence": f.get("direction_confidence", 0.0),
+                    "direction_source": f.get("direction_source", ""),
                     "t0_close": ret["t0_close"],
                     "t1_close": ret["t1_close"],
                     "t5_close": ret["t5_close"],
