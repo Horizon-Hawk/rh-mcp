@@ -198,6 +198,20 @@ def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
     return r.json().get("results", []) or []
 
 
+def get_order_detail(order_id: str, asset_type: str = "FUTURES", account_number: str = "588784215") -> dict:
+    """Fetch full detail for a specific order by ID via /wormhole/bw/orders/{id}.
+
+    asset_type: 'FUTURES' | 'EQUITY' | 'OPTION' | 'CRYPTO'
+    """
+    url = (
+        f"https://api.robinhood.com/wormhole/bw/orders/{order_id}"
+        f"?assetType={asset_type}&rhsAccountNumber={account_number}"
+    )
+    r = rhh.SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_recent_orders_unified(account_number: str = "588784215") -> list[dict]:
     """Recent orders across ALL asset types (stocks, options, futures, crypto).
 
