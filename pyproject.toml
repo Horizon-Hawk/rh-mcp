@@ -35,16 +35,35 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
 ]
+# Optional companion: GUI-based alert injector + ntfy push.
+# Windows-only in practice — uses pyautogui/pygetwindow/keyboard to find the
+# Claude Code window and paste alerts. Install with: pip install rh-mcp[monitor]
+# Run: rh-monitor   (or: python -m rh_monitor)
+monitor = [
+    "pyautogui>=0.9.54",
+    "pygetwindow>=0.0.9",
+    "pyperclip>=1.8.2",
+    "keyboard>=0.13.5",
+    "plyer>=2.1.0",
+    "psutil>=5.9.0",
+]
+# Optional analysis extras — required by rh_mcp.analysis.float_check (yfinance)
+# and rh_mcp.analysis.iv_rank (scipy for Black-Scholes IV solver).
+analysis = [
+    "yfinance>=0.2.40",
+    "scipy>=1.10.0",
+]
 
 [project.scripts]
 rh-mcp = "rh_mcp.server:main"
+rh-monitor = "rh_monitor.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Horizon-Hawk/rh-mcp"
 Issues = "https://github.com/Horizon-Hawk/rh-mcp/issues"
 
 [tool.setuptools.packages.find]
-include = ["rh_mcp*"]
+include = ["rh_mcp*", "rh_monitor*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

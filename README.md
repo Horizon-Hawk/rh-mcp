@@ -69,6 +69,63 @@ Add to your Claude Code MCP settings (see `claude_mcp_config.example.json`):
 }
 ```
 
+## Optional: rh-monitor (alert injector + phone push)
+
+`rh-monitor` is a separate companion process that polls Robinhood prices, news,
+volume spikes, and scheduled messages. When something fires it:
+
+1. Shows a Windows toast notification
+2. Sends a phone push via ntfy.sh (optional — set `NTFY_TOPIC` to enable)
+3. Auto-types the alert into the Claude Code window + Enter (Windows GUI)
+
+This is a **Windows-only**, GUI-based companion. It uses `pyautogui` /
+`pygetwindow` / `keyboard` to find the Claude Code window by title (Braille
+prefix character) and paste alerts. It works for the original author's setup;
+adapt for yours.
+
+### Install + run
+
+```bash
+pip install -e ".[monitor]"
+# write your alerts file (rh-monitor watches this):
+echo '[]' > price_alerts.json
+rh-monitor
+```
+
+### Configuration (all env vars)
+
+- `RH_MONITOR_DATA_DIR` — where the monitor reads/writes its JSON state
+  (default: current working directory)
+- `RH_CONFIG_PATH` — same path rh-mcp uses for Robinhood credentials (shared)
+- `CLAUDE_EXE` — full path to your Claude Code launcher
+  (default: `%APPDATA%\\npm\\claude.cmd`)
+- `NTFY_TOPIC` — set to an unguessable string and subscribe on your phone via
+  the ntfy.sh app. Empty by default = no phone pushes.
+- `NTFY_BASE_URL` — defaults to `https://ntfy.sh`; override for self-hosted
+- Various polling intervals: `RH_MONITOR_POLL_SECS`, `RH_MONITOR_VOL_POLL_MINS`,
+  `RH_MONITOR_NEWS_POLL_MINS`, `RH_MONITOR_DIGEST_MINS`,
+  `RH_MONITOR_VOL_SPIKE_X` (see `rh_monitor/cli.py` for full list)
+
+### State files (read from `RH_MONITOR_DATA_DIR`)
+
+Required: `price_alerts.json` (array of alert dicts; the monitor adds
+`fired`/`fired_at` fields when an alert triggers).
+
+Optional: `scheduled_messages.json`, `stock_universe.txt`,
+`fundamentals_cache.json`, `news_cache.json`, `alert_inbox.json`
+(backlog of injections that failed because the Claude window was missing).
+
+### Known limitations
+
+- **Windows-first.** pyautogui works on macOS/Linux but the window-title
+  detection (Braille prefix) is Claude-Code-on-Windows specific.
+- **Brittle to window state.** Multi-monitor, fullscreen apps, display scaling,
+  and "Claude is on virtual desktop 3 minimized" can defeat the focus path.
+  Failed injections go to `alert_inbox.json` and drain on next successful
+  injection.
+- **Antivirus may flag the keystroke synthesis.** The `keyboard` library
+  installs a global hook on Windows. This is a known false-positive pattern.
+
 ## Security
 
 - `rh_config.json` is gitignored — never commit your credentials
