@@ -192,6 +192,42 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def place_futures_order(
+    contract_uuid: str,
+    side: str,
+    quantity: int = 1,
+    order_type: str = "LIMIT",
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str = "GFD",
+    account_id: str | None = None,
+    accept_market_risk: bool = False,
+) -> dict:
+    """Place a real futures order on Robinhood.
+
+    PLACES REAL ORDERS. Verify all inputs before calling. The function generates
+    a unique refId per call (RH dedupes by refId so accidental double-call is safe).
+
+    side: 'BUY' or 'SELL'
+    order_type: 'LIMIT' (default) or 'MARKET'. MARKET requires accept_market_risk=True.
+    time_in_force: 'GFD' (day order, default) or 'GTC'.
+    stop_price: optional. Setting it produces STOP or STOP_LIMIT order_trigger.
+
+    Returns: {http_status, request_body, response} where response contains
+    the order ID and derivedState (CONFIRMED / REJECTED / FILLED / CANCELLED).
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        return fc.place_order(
+            contract_uuid=contract_uuid, side=side, quantity=quantity,
+            order_type=order_type, limit_price=limit_price, stop_price=stop_price,
+            time_in_force=time_in_force, account_id=account_id,
+            accept_market_risk=accept_market_risk,
+        )
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     """Per-category buying power breakdown: Cash, Margin total, Futures equity,
     Futures margin held, etc. Single source of truth for unified account capacity.

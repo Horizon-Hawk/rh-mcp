@@ -395,6 +395,33 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+def place_futures_order(
+    contract_uuid: str,
+    side: str,
+    quantity: int = 1,
+    order_type: str = "LIMIT",
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str = "GFD",
+    account_id: str | None = None,
+    accept_market_risk: bool = False,
+) -> dict:
+    """PLACES A REAL FUTURES ORDER ON ROBINHOOD.
+
+    side: 'BUY' or 'SELL'. order_type: 'LIMIT' (default) or 'MARKET'.
+    MARKET orders require accept_market_risk=True. time_in_force: 'GFD' or 'GTC'.
+    Returns http_status + the order response with derivedState (REJECTED, CONFIRMED, FILLED).
+    Each call generates unique refId — RH dedupes accidental double-submits.
+    """
+    return scanners.place_futures_order(
+        contract_uuid=contract_uuid, side=side, quantity=quantity,
+        order_type=order_type, limit_price=limit_price, stop_price=stop_price,
+        time_in_force=time_in_force, account_id=account_id,
+        accept_market_risk=accept_market_risk,
+    )
+
+
+@mcp.tool()
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     """Per-category buying power breakdown — Cash, Margin total, Futures equity,
     Futures margin held, Short cash. The 'futures_equity' and 'futures_margin_held'

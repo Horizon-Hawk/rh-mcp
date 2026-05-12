@@ -242,6 +242,117 @@ def get_recent_orders_unified(account_number: str = "588784215") -> list[dict]:
     return r.json().get("results", []) or []
 
 
+def place_order(
+    contract_uuid: str,
+    side: str,
+    quantity: int = 1,
+    order_type: str = "LIMIT",
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    time_in_force: str = "GFD",
+    account_id: str | None = None,
+    accept_market_risk: bool = False,
+) -> dict:
+    """Place a futures order via POST /ceres/v1/orders.
+
+    Args:
+        contract_uuid: Futures contract UUID (e.g. MNQM26 → "64cda3df-...").
+        side: "BUY" or "SELL".
+        quantity: Number of contracts (default 1).
+        order_type: "LIMIT" or "MARKET". MARKET requires accept_market_risk=True.
+        limit_price: Required for LIMIT orders. Float, sent as string to RH.
+        stop_price: Optional. Triggers STOP/STOP_LIMIT order_trigger if set.
+        time_in_force: "GFD" (day) or "GTC". Default GFD (matches RH web app).
+        account_id: Futures account UUID. Uses default if None.
+        accept_market_risk: Safety gate — MARKET orders execute immediately at
+            whatever price the book offers. False raises ValueError; explicit
+            True acknowledges you understand market-order fill risk.
+
+    Returns the raw POST response — includes order ID, derivedState (CONFIRMED,
+    REJECTED, FILLED, CANCELLED), and any rejection reason.
+
+    Each call generates a unique refId for idempotency — accidental double-call
+    will not double-submit (RH dedupes by refId).
+    """
+    import uuid as _uuid
+
+    side = side.strip().upper()
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+
+    order_type = order_type.strip().upper()
+    if order_type not in ("LIMIT", "MARKET"):
+        raise ValueError(f"order_type must be 'LIMIT' or 'MARKET', got {order_type!r}")
+
+    if order_type == "MARKET" and not accept_market_risk:
+        raise ValueError(
+            "MARKET orders fill at whatever price the book offers — pass "
+            "accept_market_risk=True to acknowledge."
+        )
+
+    if order_type == "LIMIT" and limit_price is None:
+        raise ValueError("LIMIT order requires a limit_price")
+
+    time_in_force = time_in_force.strip().upper()
+    if time_in_force not in ("GFD", "GTC"):
+        raise ValueError(f"time_in_force must be 'GFD' or 'GTC', got {time_in_force!r}")
+
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        raise RuntimeError("No futures account ID available. Pass account_id explicitly.")
+
+    # Determine orderTrigger from stop_price + order_type
+    if stop_price is not None:
+        order_trigger = "STOP_LIMIT" if order_type == "LIMIT" else "STOP"
+    else:
+        order_trigger = "IMMEDIATE"
+
+    body = {
+        "accountId": account_id,
+        "legs": [{
+            "contractType": "OUTRIGHT",
+            "contractId": contract_uuid,
+            "ratioQuantity": 1,
+            "orderSide": side,
+        }],
+        "quantity": str(quantity),
+        "orderType": order_type,
+        "orderTrigger": order_trigger,
+        "timeInForce": time_in_force,
+        "refId": str(_uuid.uuid4()),
+    }
+    if limit_price is not None:
+        body["limitPrice"] = str(limit_price)
+    if stop_price is not None:
+        body["stopPrice"] = str(stop_price)
+
+    headers = {
+        "content-type": "application/json",
+        "rh-contract-protected": "true",
+        "x-robinhood-client-platform": "black-widow",
+    }
+
+    url = f"{CERES_BASE.replace('/v1', '/v1')}/orders"  # /ceres/v1/orders
+    r = rhh.SESSION.post(url, json=body, headers=headers, timeout=15)
+    # Don't raise_for_status — we want to return the response even on 400 (RH
+    # rejection includes useful error detail). Caller checks status_code / derivedState.
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"raw_text": r.text}
+    return {
+        "http_status": r.status_code,
+        "request_body": body,
+        "response": payload,
+    }
+
+
+def cancel_order(order_id: str) -> dict:
+    """Cancel an open futures order. Endpoint still being mapped — placeholder."""
+    raise NotImplementedError("Cancel endpoint not yet captured from web app.")
+
+
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     """Per-category buying power breakdown including futures equity + margin held.
 
