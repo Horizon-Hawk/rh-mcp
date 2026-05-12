@@ -1,62 +1,11 @@
-"""Analysis script wrappers — wraps the existing Python scripts as MCP tools.
+"""Analysis MCP tool wrappers — thin shims over rh_mcp.analysis.* modules.
 
-Each script is invoked as a subprocess. Scripts must print a final line starting
-with 'JSON:' followed by the parseable JSON result. This matches the pattern in
-the user's existing scripts (stack_grade.py, order_book.py, historicals.py, etc.).
-
-Configurable via env var RH_SCRIPTS_DIR (default: C:\\Users\\algee\\).
-For shared distribution, friends point this at their own scripts directory.
-If the scripts don't exist, the tools return a clear "script not available" error.
+All analysis runs in-process inside the MCP server. The legacy subprocess-based
+script-spawning path was removed in the script-to-module refactor; the env var
+RH_SCRIPTS_DIR is no longer consulted by these wrappers.
 """
 
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-SCRIPTS_DIR = Path(os.environ.get("RH_SCRIPTS_DIR", r"C:\Users\algee"))
-
-
-def _run_script(script_name: str, args: list[str], timeout: int = 60) -> dict:
-    """Run a script and parse its 'JSON: ...' final-line output."""
-    script_path = SCRIPTS_DIR / script_name
-    if not script_path.exists():
-        return {
-            "success": False,
-            "error": f"script not found: {script_path}",
-            "hint": "Set RH_SCRIPTS_DIR env var to point at your scripts directory.",
-        }
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path), *args],
-            capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": f"{script_name} timed out after {timeout}s"}
-    except Exception as e:
-        return {"success": False, "error": f"{script_name} failed to launch: {e}"}
-
-    # Find the JSON: line
-    json_payload = None
-    for line in result.stdout.splitlines():
-        if line.startswith("JSON:"):
-            json_payload = line[len("JSON:"):].strip()
-    if not json_payload:
-        return {
-            "success": False,
-            "error": "no JSON output from script",
-            "stdout_tail": result.stdout[-500:],
-            "stderr_tail": result.stderr[-500:],
-            "returncode": result.returncode,
-        }
-    try:
-        data = json.loads(json_payload)
-    except json.JSONDecodeError as e:
-        return {"success": False, "error": f"JSON parse failed: {e}", "raw": json_payload[:500]}
-    return {"success": True, "data": data}
+from __future__ import annotations
 
 
 def stack_grade(tickers: str) -> dict:
@@ -69,7 +18,15 @@ def stack_grade(tickers: str) -> dict:
         tickers: One or more tickers, space- or comma-separated.
     """
     symbols = [t.strip().upper() for t in tickers.replace(",", " ").split() if t.strip()]
-    return _run_script("stack_grade.py", symbols, timeout=90)
+    try:
+        from rh_mcp.analysis import stack_grade as _stack
+    except ImportError as e:
+        return {"success": False, "error": f"in-process stack_grade unavailable: {e}"}
+    try:
+        data = _stack.analyze(symbols)
+    except Exception as e:
+        return {"success": False, "error": f"stack_grade failed: {e}"}
+    return {"success": True, "data": data}
 
 
 def order_book_scan(ticker: str, price: float, range_dollars: float | None = None, threshold: int | None = None) -> dict:

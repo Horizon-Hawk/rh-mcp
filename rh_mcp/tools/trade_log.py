@@ -1,34 +1,9 @@
-"""Trade logger wrappers — wraps trade_logger.py as MCP tools."""
+"""Trade-log MCP tool wrappers — calls in-process rh_mcp.analysis.trade_log directly."""
 
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
+from __future__ import annotations
 
-SCRIPTS_DIR = Path(os.environ.get("RH_SCRIPTS_DIR", r"C:\Users\algee"))
-TRADE_CSV = Path(os.environ.get("RH_TRADE_CSV", r"C:\Users\algee\robinhood_trades.csv"))
-
-
-def _run_logger(args: list[str], timeout: int = 30) -> dict:
-    script = SCRIPTS_DIR / "trade_logger.py"
-    if not script.exists():
-        return {"success": False, "error": f"trade_logger.py not found at {script}"}
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script), *args],
-            capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-    except Exception as e:
-        return {"success": False, "error": f"trade_logger failed to launch: {e}"}
-    return {
-        "success": result.returncode == 0,
-        "stdout": result.stdout.strip(),
-        "stderr": result.stderr.strip() if result.returncode else "",
-        "returncode": result.returncode,
-    }
+from rh_mcp.analysis import trade_log as _tl
+from rh_mcp.analysis import trade_stats as _ts
 
 
 def log_open(
@@ -56,22 +31,25 @@ def log_open(
         target: Profit target price (optional).
         thesis: Free-text setup description.
     """
-    args = [
-        "open",
-        "--account", str(account),
-        "--ticker", ticker.upper(),
-        "--direction", direction.lower(),
-        "--strategy", strategy,
-        "--entry", str(entry),
-        "--shares", str(shares),
-    ]
-    if stop is not None:
-        args += ["--stop", str(stop)]
-    if target is not None:
-        args += ["--target", str(target)]
-    if thesis:
-        args += ["--thesis", thesis]
-    return _run_logger(args)
+    try:
+        trade_id = _tl.open_trade(
+            account=account, ticker=ticker, direction=direction, strategy=strategy,
+            entry_price=entry, shares=shares,
+            stop_price=stop, target_price=target, thesis=thesis,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"log_open failed: {e}"}
+    return {
+        "success": True,
+        "trade_id": trade_id,
+        "ticker": ticker.upper(),
+        "direction": direction.lower(),
+        "shares": shares,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "csv_path": str(_tl.CSV_PATH),
+    }
 
 
 def log_partial(
@@ -82,17 +60,20 @@ def log_partial(
     notes: str = "",
 ) -> dict:
     """Record a partial exit. Trade stays OPEN unless this closes remaining shares."""
-    args = [
-        "partial",
-        "--id", trade_id,
-        "--exit", str(exit_price),
-        "--shares", str(shares),
-    ]
-    if reason:
-        args += ["--reason", reason]
-    if notes:
-        args += ["--notes", notes]
-    return _run_logger(args)
+    try:
+        ok, remaining = _tl.partial_exit(trade_id, exit_price, shares, reason, notes)
+    except Exception as e:
+        return {"success": False, "error": f"log_partial failed: {e}"}
+    if not ok:
+        if remaining is None:
+            return {"success": False, "error": f"trade {trade_id} not found or already closed"}
+        return {"success": False, "error": f"requested {shares} > remaining {remaining}"}
+    return {
+        "success": True,
+        "trade_id": trade_id,
+        "remaining_shares": remaining,
+        "auto_closed": (remaining or 0) < 0.0001,
+    }
 
 
 def log_close(
@@ -108,50 +89,37 @@ def log_close(
         grade: 'A+'|'A'|'B'|'C'|'F' (optional).
         reason: 'target'|'stop'|'pattern'|'manual'|'time'|'news'|'trail'.
     """
-    args = ["close", "--id", trade_id, "--exit", str(exit_price)]
-    if grade:
-        args += ["--grade", grade]
-    if reason:
-        args += ["--reason", reason]
-    if notes:
-        args += ["--notes", notes]
-    return _run_logger(args)
+    try:
+        ok = _tl.close_trade(trade_id, exit_price, grade=grade, exit_reason=reason, notes=notes)
+    except Exception as e:
+        return {"success": False, "error": f"log_close failed: {e}"}
+    if not ok:
+        return {"success": False, "error": f"trade {trade_id} not found or already closed"}
+    return {"success": True, "trade_id": trade_id, "exit_price": exit_price, "grade": grade or None}
 
 
 def list_open_trades() -> dict:
     """List all OPEN trades from the trade log CSV."""
-    result = _run_logger(["list-open"])
-    return {**result, "csv_path": str(TRADE_CSV)}
+    try:
+        rows = _tl.get_open_trades()
+    except Exception as e:
+        return {"success": False, "error": f"list_open_trades failed: {e}"}
+    return {"success": True, "count": len(rows), "trades": rows, "csv_path": str(_tl.CSV_PATH)}
 
 
 def list_all_trades(limit: int = 50) -> dict:
-    """List recent trades (open + closed). limit defaults to 50."""
-    result = _run_logger(["list-all"])
-    # Trim output to last N lines for readability
-    if result.get("success") and result.get("stdout"):
-        lines = result["stdout"].splitlines()
-        result["stdout"] = "\n".join(lines[-limit:])
-    return result
+    """List recent trades (open + closed). limit caps the return count from the end."""
+    try:
+        rows = _tl.get_all_trades()
+    except Exception as e:
+        return {"success": False, "error": f"list_all_trades failed: {e}"}
+    trimmed = rows[-limit:] if limit and len(rows) > limit else rows
+    return {"success": True, "count": len(trimmed), "total": len(rows), "trades": trimmed}
 
 
 def trade_stats() -> dict:
-    """Run trade_stats.py for TTS qualification + performance metrics (win rate, P&L, etc.)."""
-    script = SCRIPTS_DIR / "trade_stats.py"
-    if not script.exists():
-        return {"success": False, "error": f"trade_stats.py not found at {script}",
-                "hint": "Set RH_SCRIPTS_DIR env var."}
+    """TTS qualification + performance metrics (win rate, P&L, holding period, trade-day ratio)."""
     try:
-        result = subprocess.run(
-            [sys.executable, str(script)],
-            capture_output=True, text=True, timeout=30,
-            stdin=subprocess.DEVNULL,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
+        return _ts.analyze()
     except Exception as e:
         return {"success": False, "error": f"trade_stats failed: {e}"}
-    return {
-        "success": result.returncode == 0,
-        "stdout": result.stdout,
-        "stderr": result.stderr if result.returncode else "",
-        "returncode": result.returncode,
-    }
