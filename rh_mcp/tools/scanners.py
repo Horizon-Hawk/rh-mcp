@@ -104,6 +104,26 @@ def scan_unusual_oi(
         return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
 
 
+def backtest(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    strategies: list[str] | None = None,
+) -> dict:
+    """Walk-forward backtest of price-based strategies on 5y daily bars.
+
+    Strategies: 'capitulation_reversal', 'rsi2_long', 'momentum_12_1', 'pead'.
+    Pass strategies=None to run all four. Costs and slippage NOT modeled — see
+    `caveats` field in response.
+    """
+    from rh_mcp.analysis import backtest as _bt
+    try:
+        return _bt.backtest(
+            tickers=tickers, universe_file=universe_file, strategies=strategies,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"backtest failed: {e}"}
+
+
 def scan_pead(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

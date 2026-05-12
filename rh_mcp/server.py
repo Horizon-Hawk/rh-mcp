@@ -339,6 +339,19 @@ def scan_unusual_oi(
 
 
 @mcp.tool()
+def backtest(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    strategies: list[str] | None = None,
+) -> dict:
+    """Walk-forward backtest of price-based strategies on 5y daily bars.
+    Returns per-strategy win rate, avg return, profit factor, Sharpe-per-trade.
+    Strategies: capitulation_reversal, rsi2_long, momentum_12_1, pead.
+    """
+    return scanners.backtest(tickers=tickers, universe_file=universe_file, strategies=strategies)
+
+
+@mcp.tool()
 def scan_pead(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
