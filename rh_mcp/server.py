@@ -348,6 +348,24 @@ def get_futures_quote(ticker: str) -> dict:
 
 
 @mcp.tool()
+def scan_futures_rsi2(
+    tickers: list[str] | None = None,
+    oversold_threshold: float = 5.0,
+    overbought_threshold: float = 95.0,
+) -> dict:
+    """Futures RSI(2) mean reversion scanner. Default basket excludes NG (no edge).
+    Returns longs (oversold + uptrend) and shorts (overbought + downtrend) with
+    multi-fire flags when correlated instruments align (e.g. MNQ + ES both fire).
+    Validated edge: GC PF 2.01, MNQ PF 1.92, ES PF 1.78 over 5y daily backtest.
+    """
+    return scanners.scan_futures_rsi2(
+        tickers=tickers,
+        oversold_threshold=oversold_threshold,
+        overbought_threshold=overbought_threshold,
+    )
+
+
+@mcp.tool()
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract (NQ, MNQ, ES, CL, GC etc.) via yfinance.
     Returns OHLCV bars suitable for backtesting and EOD analysis. RH's futures

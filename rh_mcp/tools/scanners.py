@@ -127,6 +127,29 @@ def get_futures_quote(ticker: str) -> dict:
         return {"success": False, "error": f"futures quote failed: {e}"}
 
 
+def scan_futures_rsi2(
+    tickers: list[str] | None = None,
+    oversold_threshold: float = 5.0,
+    overbought_threshold: float = 95.0,
+) -> dict:
+    """Futures RSI(2) mean reversion scanner. Default basket: GC/MNQ/NQ/ES/MES/RTY/
+    CL/YM/SI (NG excluded — negative expectancy in backtest). Returns longs (oversold
+    in uptrend) + shorts (overbought in downtrend), plus a multi_fire summary
+    when correlated instruments fire simultaneously (e.g. MNQ + ES both oversold).
+
+    Validated edge from 5y backtest: GC PF 2.01, MNQ PF 1.92, ES PF 1.78.
+    """
+    from rh_mcp.analysis import scan_futures_rsi2 as _sf
+    try:
+        return _sf.analyze(
+            tickers=tickers,
+            oversold_threshold=oversold_threshold,
+            overbought_threshold=overbought_threshold,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_futures_rsi2 failed: {e}"}
+
+
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract via yfinance (independent of RH).
 
