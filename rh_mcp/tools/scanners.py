@@ -3,6 +3,68 @@
 from rh_mcp.lib.rh_client import client
 
 
+def scan_squeeze_breakouts(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    compression_percentile: float = 20.0,
+    proximity_upper_pct: float = 2.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    top_n: int = 20,
+) -> dict:
+    """Find Bollinger-squeeze candidates: 20d bandwidth in bottom percentile
+    of 6-month history AND price near upper band (ready to break).
+
+    Precursor signal to the 52w-high scanner — catches setups ~$0.50 earlier.
+    Output ranked by lowest bandwidth percentile (deepest compression first).
+    """
+    from rh_mcp.analysis import squeeze_breakout
+    try:
+        return squeeze_breakout.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            compression_percentile=compression_percentile,
+            proximity_upper_pct=proximity_upper_pct,
+            min_price=min_price,
+            min_avg_volume=min_avg_volume,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_squeeze_breakouts failed: {e}"}
+
+
+def scan_sympathy_laggards(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    leader_move_pct: float = 5.0,
+    max_laggard_move_pct: float = 2.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    min_peers_per_industry: int = 3,
+    top_n: int = 20,
+) -> dict:
+    """Find industries where a leader moved ≥ leader_move_pct today but peers
+    in the same industry haven't moved much (< max_laggard_move_pct).
+
+    Surfaces day-2 catch-up trades when sector themes propagate. Returns
+    {industry, leader, laggards} groups ranked by leader's move size.
+    """
+    from rh_mcp.analysis import sympathy_laggards
+    try:
+        return sympathy_laggards.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            leader_move_pct=leader_move_pct,
+            max_laggard_move_pct=max_laggard_move_pct,
+            min_price=min_price,
+            min_avg_volume=min_avg_volume,
+            min_peers_per_industry=min_peers_per_industry,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_sympathy_laggards failed: {e}"}
+
+
 def scan_52w_breakouts(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
