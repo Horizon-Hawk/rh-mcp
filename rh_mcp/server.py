@@ -339,6 +339,24 @@ def scan_unusual_oi(
 
 
 @mcp.tool()
+def get_futures_quote(ticker: str) -> dict:
+    """Get current quote for an RH futures contract (e.g. 'MNQM26', 'ESM26').
+    Returns bid/ask/last/spread. Ticker must be in UUID cache (register via
+    register_futures_uuid first — UUIDs come from RH web app network inspection).
+    """
+    return scanners.get_futures_quote(ticker)
+
+
+@mcp.tool()
+def register_futures_uuid(ticker: str, uuid: str) -> dict:
+    """Persist a futures ticker → contract UUID mapping. Get UUIDs by inspecting
+    RH web app network calls (RH's futures API uses internal UUIDs, not tickers).
+    Cached to ~/.rh_futures_uuids.json so future sessions inherit the mappings.
+    """
+    return scanners.register_futures_uuid(ticker, uuid)
+
+
+@mcp.tool()
 def scan_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

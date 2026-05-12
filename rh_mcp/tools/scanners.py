@@ -104,6 +104,41 @@ def scan_unusual_oi(
         return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
 
 
+def get_futures_quote(ticker: str) -> dict:
+    """Get current quote for an RH futures contract (e.g. 'MNQM26').
+
+    The ticker must be in the UUID cache first — register via
+    futures_client.register_uuid(ticker, uuid). UUIDs are sourced by inspecting
+    RH's web app network calls (the quote endpoint takes UUIDs, not tickers).
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        q = fc.get_quote_by_ticker(ticker)
+        if q is None:
+            uuid = fc.get_uuid(ticker)
+            return {
+                "success": False,
+                "error": f"ticker {ticker} not in UUID cache. Register with "
+                         f"futures_client.register_uuid(ticker, uuid). "
+                         f"UUID currently {uuid!r}.",
+            }
+        return {"success": True, **q}
+    except Exception as e:
+        return {"success": False, "error": f"futures quote failed: {e}"}
+
+
+def register_futures_uuid(ticker: str, uuid: str) -> dict:
+    """Persist a ticker → UUID mapping for futures contracts. Get the UUID by
+    inspecting RH web app network calls for the futures quote endpoint.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        fc.register_uuid(ticker, uuid)
+        return {"success": True, "ticker": ticker.upper().lstrip("/"), "uuid": uuid}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def scan_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
