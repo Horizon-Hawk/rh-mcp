@@ -57,11 +57,41 @@ def _classify(item_codes: list[str]) -> str | None:
     return None
 
 
-def _enrich_with_items(filing: dict) -> dict:
-    """Fetch item codes for one filing — slow call (HTTP per filing)."""
-    items = _edgar.filing_items(filing.get("filing_url", ""))
+def _enrich_with_items(filing: dict, with_body_keywords: bool = False) -> dict:
+    """Fetch item codes for one filing — slow call (HTTP per filing).
+
+    If with_body_keywords=True, ALSO fetch the filing body documents and run
+    the keyword pattern library against them. Adds `body_signals` field with
+    per-pattern hits and `body_direction` / `body_confidence` synthesis.
+    """
+    url = filing.get("filing_url", "")
+    items = _edgar.filing_items(url)
     filing["item_codes"] = items
-    filing["direction"] = _classify(items)
+    filing["item_direction"] = _classify(items)
+
+    if with_body_keywords:
+        from rh_mcp.analysis import edgar_keywords as _kw
+        hits = _kw.scan_filing_body(url)
+        filing["body_signals"] = [
+            {"pattern": h.pattern_name, "direction": h.direction, "weight": h.weight, "context": h.context[:160]}
+            for h in hits
+        ]
+        body_dir, body_conf = _kw.synthesize_direction(hits)
+        filing["body_direction"] = body_dir
+        filing["body_confidence"] = body_conf
+    else:
+        filing["body_signals"] = []
+        filing["body_direction"] = None
+        filing["body_confidence"] = 0.0
+
+    # Final direction: prefer body signal if confidence >= 0.7, else item code direction
+    if filing["body_direction"] and filing["body_confidence"] >= 0.7:
+        filing["direction"] = filing["body_direction"]
+        filing["direction_source"] = "body_keywords"
+    else:
+        filing["direction"] = filing["item_direction"]
+        filing["direction_source"] = "item_codes"
+
     return filing
 
 
@@ -72,6 +102,7 @@ def analyze(
     lookback_minutes: int = DEFAULT_LOOKBACK_MINUTES,
     recent_filings_count: int = DEFAULT_RECENT_FILINGS_COUNT,
     top_n: int = DEFAULT_TOP_N,
+    deep_scan: bool = False,
 ) -> dict:
     """Scan recent 8-K filings for high-signal item codes on tradable tickers.
 
@@ -131,10 +162,13 @@ def analyze(
         f["ticker"] = ticker
         tradable.append(f)
 
-    # Step 4: enrich with item codes (HTTP per filing — parallel-bounded)
+    # Step 4: enrich with item codes (HTTP per filing — parallel-bounded).
+    # If deep_scan=True, also pull filing bodies + run keyword pattern library
+    # to identify high-signal phrases like "non-reliance", "going concern",
+    # "material adverse change" — the digestive-drift edge layer.
     enriched: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = [ex.submit(_enrich_with_items, f) for f in tradable]
+        futures = [ex.submit(_enrich_with_items, f, deep_scan) for f in tradable]
         for fut in concurrent.futures.as_completed(futures):
             enriched.append(fut.result())
 

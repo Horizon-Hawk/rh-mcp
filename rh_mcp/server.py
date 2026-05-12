@@ -346,15 +346,19 @@ def scan_8k(
     lookback_minutes: int = 240,
     recent_filings_count: int = 100,
     top_n: int = 20,
+    deep_scan: bool = False,
 ) -> dict:
     """SEC 8-K filing scanner. Default codes: 1.01 (long bias material agreement),
-    3.02/4.01/4.02 (short bias dilution/auditor change/restatement). Lookback in
-    minutes from now. Requires RH_EDGAR_USER_AGENT env var.
+    3.02/4.01/4.02 (short bias dilution/auditor change/restatement). Set deep_scan=True
+    to fetch filing bodies + run keyword pattern library — catches "digestive drift"
+    signals (non-reliance, going concern, definitive agreement, etc.) that override
+    item-code direction when confidence >= 0.7.
     """
     return scanners.scan_8k(
         tickers=tickers, universe_file=universe_file,
         item_codes=item_codes, lookback_minutes=lookback_minutes,
         recent_filings_count=recent_filings_count, top_n=top_n,
+        deep_scan=deep_scan,
     )
 
 

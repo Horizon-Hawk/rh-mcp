@@ -111,14 +111,18 @@ def scan_8k(
     lookback_minutes: int = 240,
     recent_filings_count: int = 100,
     top_n: int = 20,
+    deep_scan: bool = False,
 ) -> dict:
     """SEC 8-K filing scanner: surfaces recent material filings with high-signal
     item codes. Default codes: 1.01 (Material Agreement, LONG bias), 3.02 (dilution),
     4.01 (auditor change), 4.02 (financial restatement) — last three SHORT bias.
 
-    Returns candidates classified by direction. Hypothesis: market takes 1-5 days
-    to fully digest 8-K content; entering on filing day catches the drift.
-    Requires RH_EDGAR_USER_AGENT env var set to "Your Name your@email" per SEC policy.
+    Set deep_scan=True to ALSO fetch filing bodies and run the keyword pattern
+    library (going_concern, non_reliance, definitive_agreement, etc.). Body
+    signals override item-code direction when confidence >= 0.7 — captures the
+    "digestive drift" edge where market takes minutes to fully read the filing.
+
+    Requires RH_EDGAR_USER_AGENT env var set per SEC policy.
     """
     from rh_mcp.analysis import scan_8k as _s8k
     try:
@@ -126,6 +130,7 @@ def scan_8k(
             tickers=tickers, universe_file=universe_file,
             item_codes=item_codes, lookback_minutes=lookback_minutes,
             recent_filings_count=recent_filings_count, top_n=top_n,
+            deep_scan=deep_scan,
         )
     except Exception as e:
         return {"success": False, "error": f"scan_8k failed: {e}"}
