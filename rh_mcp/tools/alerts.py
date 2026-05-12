@@ -83,10 +83,38 @@ def add_alert(
     if direction not in ("above", "below"):
         return {"success": False, "error": "direction must be 'above' or 'below'"}
 
+    sym = ticker.upper()
+    target = float(target)
+
+    # Sanity check: would this alert fire on the next monitor poll because
+    # the target is already on the "trigger side" of the current price?
+    # We fetch a live price here — cheap call, well worth the 200ms to avoid
+    # premature-fire surprises (e.g. staging "above $98" when stock already at $98.18).
+    warning = None
+    current_price = None
+    try:
+        from rh_mcp.lib.rh_client import client
+        rh = client()
+        latest = rh.get_latest_price(sym)
+        if latest and latest[0]:
+            current_price = float(latest[0])
+            if direction == "above" and current_price >= target:
+                warning = (
+                    f"target ${target:.2f} is at or below current price ${current_price:.2f} "
+                    f"— alert will fire immediately on next monitor poll"
+                )
+            elif direction == "below" and current_price <= target:
+                warning = (
+                    f"target ${target:.2f} is at or above current price ${current_price:.2f} "
+                    f"— alert will fire immediately on next monitor poll"
+                )
+    except Exception:
+        pass  # price-check is advisory; don't block staging on its failure
+
     alerts = _read_alerts()
     new_alert = {
-        "ticker": ticker.upper(),
-        "target": float(target),
+        "ticker": sym,
+        "target": target,
         "direction": direction,
         "active": bool(active),
         "fired": False,
@@ -96,7 +124,13 @@ def add_alert(
     }
     alerts.append(new_alert)
     _write_alerts(alerts)
-    return {"success": True, "added": new_alert, "total_alerts": len(alerts)}
+
+    result = {"success": True, "added": new_alert, "total_alerts": len(alerts)}
+    if current_price is not None:
+        result["current_price"] = current_price
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def deactivate_alert(ticker: str, target: float | None = None, grade: str | None = None) -> dict:
