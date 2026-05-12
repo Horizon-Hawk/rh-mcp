@@ -21,6 +21,8 @@ import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 
+import robin_stocks.robinhood as rh
+
 from rh_mcp.analysis import earnings as _earnings
 from rh_mcp.analysis import iv_rank as _iv_rank
 from rh_mcp.auth import login
@@ -29,9 +31,89 @@ MIN_DAYS_TO_EARNINGS = 7
 MAX_DAYS_TO_EARNINGS = 30
 MIN_IV_RANK = 70.0
 MIN_PRICE = 10.0          # options liquidity floor
+MIN_OPTION_OI = 50        # min OI on ATM options — guards against untradeable strikes
+MAX_BID_ASK_SPREAD_PCT = 30.0  # ATM strike bid/ask spread must be <= this % of mid
 MAX_IV_PARALLEL = 4       # cap parallel iv_rank calls to avoid rate limits
 
 DEFAULT_TOP_N = 15
+
+
+def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_pct: float) -> dict:
+    """Quick liquidity verdict on ATM options around current_price.
+
+    Returns {"liquid": bool, "reason": str, "atm_call": {...}, "atm_put": {...}}.
+    Pulls the nearest expiry that's beyond a week (to avoid expiring-Friday noise)
+    and checks ATM call + ATM put for OI and bid/ask spread health.
+
+    Catches the BZ case: high IV rank but zero bids on short legs = untradeable.
+    """
+    try:
+        chain = rh.options.get_chains(ticker)
+        dates = sorted(chain.get("expiration_dates", []))
+    except Exception:
+        return {"liquid": False, "reason": "could not pull chain"}
+    if not dates:
+        return {"liquid": False, "reason": "no expiry dates"}
+
+    # Pick an expiry ~2-6 weeks out — far enough to be liquid, close enough to matter
+    from datetime import date, datetime, timedelta
+    today = date.today()
+    target_expiry = None
+    for d in dates:
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        delta_days = (dt - today).days
+        if 14 <= delta_days <= 60:
+            target_expiry = d
+            break
+    if not target_expiry:
+        return {"liquid": False, "reason": "no expiry in 14-60 day window"}
+
+    try:
+        calls = rh.options.find_options_by_expiration(ticker, target_expiry, optionType="call") or []
+        puts = rh.options.find_options_by_expiration(ticker, target_expiry, optionType="put") or []
+    except Exception:
+        return {"liquid": False, "reason": "chain fetch failed"}
+    if not calls or not puts:
+        return {"liquid": False, "reason": "no options at target expiry"}
+
+    def _nearest(rows):
+        return min(rows, key=lambda r: abs(float(r.get("strike_price", 0)) - current_price))
+
+    atm_call = _nearest(calls)
+    atm_put = _nearest(puts)
+
+    def _check(row):
+        try:
+            bid = float(row.get("bid_price") or 0)
+            ask = float(row.get("ask_price") or 0)
+            oi = int(float(row.get("open_interest") or 0))
+        except (ValueError, TypeError):
+            return None, "parse error"
+        mid = (bid + ask) / 2
+        if oi < min_oi:
+            return None, f"OI {oi} < {min_oi}"
+        if mid <= 0:
+            return None, "no mid (zero bid+ask)"
+        spread_pct = (ask - bid) / mid * 100 if mid > 0 else 999
+        if spread_pct > max_spread_pct:
+            return None, f"bid-ask {spread_pct:.0f}% > {max_spread_pct}%"
+        return {"strike": float(row["strike_price"]), "bid": bid, "ask": ask, "oi": oi, "spread_pct": round(spread_pct, 1)}, None
+
+    call_info, call_err = _check(atm_call)
+    put_info, put_err = _check(atm_put)
+
+    if call_err or put_err:
+        return {"liquid": False, "reason": f"call: {call_err or 'ok'} | put: {put_err or 'ok'}"}
+
+    return {
+        "liquid": True,
+        "expiry_checked": target_expiry,
+        "atm_call": call_info,
+        "atm_put": put_info,
+    }
 
 
 def _load_universe_from_file(path: Path) -> list[str]:
@@ -64,17 +146,25 @@ def analyze(
     max_days_to_earnings: int = MAX_DAYS_TO_EARNINGS,
     min_iv_rank: float = MIN_IV_RANK,
     min_price: float = MIN_PRICE,
+    min_option_oi: int = MIN_OPTION_OI,
+    max_bid_ask_spread_pct: float = MAX_BID_ASK_SPREAD_PCT,
     top_n: int = DEFAULT_TOP_N,
+    skip_liquidity_check: bool = False,
 ) -> dict:
     """Find iron-condor / premium-selling candidates.
 
     Stage 1: filter universe by earnings_days_away in [min, max] window.
     Stage 2: run iv_rank in parallel on survivors; filter iv_rank >= min_iv_rank.
-    Stage 3: sort by iv_rank descending, return top_n.
+    Stage 3: liquidity check on ATM options — drops names like BZ where high
+             IV rank co-exists with zero-bid short legs (untradeable as IC).
+    Stage 4: sort by iv_rank descending, return top_n.
 
     iv_rank is the expensive call (~20s per ticker). With MAX_IV_PARALLEL=4
     threads, scanning 30 candidates takes ~150s. Stage-1 filter is cheap
     (one earnings API call per ticker) so we narrow before paying the iv cost.
+
+    Set skip_liquidity_check=True to keep all IV-passing candidates regardless
+    of liquidity (useful for research / debugging the scanner).
     """
     if tickers is None:
         if universe_file is None:
@@ -142,8 +232,31 @@ def analyze(
             })
 
     candidates.sort(key=lambda x: x["iv_rank"], reverse=True)
+
+    # Stage 3: liquidity check on ATM options — drops names with zero-bid
+    # short legs (untradeable as IC). Trims to top_n first so we don't burn
+    # API calls on names we wouldn't ship anyway.
     if top_n and len(candidates) > top_n:
         candidates = candidates[:top_n]
+
+    if not skip_liquidity_check and candidates:
+        liquid_candidates: list[dict] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_IV_PARALLEL) as ex:
+            futures = {
+                ex.submit(_liquidity_check, c["ticker"], c["price"], min_option_oi, max_bid_ask_spread_pct): c
+                for c in candidates
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                c = futures[fut]
+                liq = fut.result()
+                c["liquidity"] = liq
+                if liq.get("liquid"):
+                    liquid_candidates.append(c)
+        liquid_candidates.sort(key=lambda x: x["iv_rank"], reverse=True)
+        passed_liquidity = len(liquid_candidates)
+        candidates = liquid_candidates
+    else:
+        passed_liquidity = len(candidates)
 
     return {
         "success": True,
@@ -151,6 +264,7 @@ def analyze(
         "finished_at": datetime.now().isoformat(timespec="seconds"),
         "total_scanned": len(tickers),
         "passed_earnings_window": len(passed_earnings),
-        "passed_iv_threshold": len(candidates),
+        "passed_iv_threshold": passed_liquidity if skip_liquidity_check else None,
+        "passed_liquidity": passed_liquidity,
         "candidates": candidates,
     }

@@ -104,6 +104,68 @@ def scan_unusual_oi(
         return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
 
 
+def snapshot_oi(tickers: list[str]) -> dict:
+    """Snapshot today's OI for the given tickers. Writes per-ticker JSON to
+    RH_OI_HISTORY_DIR/YYYY-MM-DD/. Run daily after close to build the history
+    that find_oi_spikes() compares against.
+    """
+    from rh_mcp.analysis import oi_history
+    try:
+        return oi_history.snapshot_universe(tickers)
+    except Exception as e:
+        return {"success": False, "error": f"snapshot_oi failed: {e}"}
+
+
+def find_oi_spikes(
+    tickers: list[str],
+    days_back: int = 1,
+    min_delta_pct: float = 50.0,
+    min_delta_abs: int = 500,
+) -> dict:
+    """Compare today's OI vs a snapshot from N days ago. Flags strikes where
+    OI grew by min_delta_abs contracts AND min_delta_pct percent.
+    Requires prior snapshot_oi() runs to populate the comparison baseline.
+    """
+    from rh_mcp.analysis import oi_history
+    try:
+        return oi_history.find_oi_spikes(
+            tickers=tickers,
+            days_back=days_back,
+            min_delta_pct=min_delta_pct,
+            min_delta_abs=min_delta_abs,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"find_oi_spikes failed: {e}"}
+
+
+def scan_failed_breakouts(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_breakout_pct: float = 0.3,
+    min_fade_depth_pct: float = 0.5,
+    min_price: float = 5.0,
+    min_avg_volume: int = 500_000,
+    top_n: int = 15,
+) -> dict:
+    """Find failed breakout short candidates: stocks that broke above prior-day
+    high today, then faded back inside the prior range. Best mid-session
+    (10:30 AM ET onwards). Ranked by fade depth from today's high.
+    """
+    from rh_mcp.analysis import failed_breakout
+    try:
+        return failed_breakout.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            min_breakout_pct=min_breakout_pct,
+            min_fade_depth_pct=min_fade_depth_pct,
+            min_price=min_price,
+            min_avg_volume=min_avg_volume,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_failed_breakouts failed: {e}"}
+
+
 def scan_all(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

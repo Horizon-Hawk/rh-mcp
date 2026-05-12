@@ -23,7 +23,7 @@ def log_open(
         account: Robinhood account number.
         ticker: Stock symbol.
         direction: 'long' or 'short'.
-        strategy: 'momentum_breakout', 'debit_spread', 'earnings_drift', 'ah_earnings',
+        strategy: 'momentum_breakout', 'debit_spread', 'iron_condor', 'earnings_drift', 'ah_earnings',
                   'dead_cat_short', 'intraday', 'spike_entry'.
         entry: Fill price.
         shares: Quantity.

@@ -339,6 +339,54 @@ def scan_unusual_oi(
 
 
 @mcp.tool()
+def snapshot_oi(tickers: list[str]) -> dict:
+    """Snapshot today's OI for tickers. Writes JSON to RH_OI_HISTORY_DIR/YYYY-MM-DD/.
+    Run daily after close to build the OI delta history.
+    """
+    return scanners.snapshot_oi(tickers)
+
+
+@mcp.tool()
+def find_oi_spikes(
+    tickers: list[str],
+    days_back: int = 1,
+    min_delta_pct: float = 50.0,
+    min_delta_abs: int = 500,
+) -> dict:
+    """Find strikes where OI grew significantly vs N days ago. Requires
+    snapshot_oi() runs to populate the comparison baseline.
+    """
+    return scanners.find_oi_spikes(
+        tickers=tickers, days_back=days_back,
+        min_delta_pct=min_delta_pct, min_delta_abs=min_delta_abs,
+    )
+
+
+@mcp.tool()
+def scan_failed_breakouts(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_breakout_pct: float = 0.3,
+    min_fade_depth_pct: float = 0.5,
+    min_price: float = 5.0,
+    min_avg_volume: int = 500_000,
+    top_n: int = 15,
+) -> dict:
+    """Failed breakout shorts: stocks that broke prior-day high today then faded
+    back inside. Best mid-session. Ranked by fade depth from today's high.
+    """
+    return scanners.scan_failed_breakouts(
+        tickers=tickers,
+        universe_file=universe_file,
+        min_breakout_pct=min_breakout_pct,
+        min_fade_depth_pct=min_fade_depth_pct,
+        min_price=min_price,
+        min_avg_volume=min_avg_volume,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
 def scan_all(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

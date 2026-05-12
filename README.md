@@ -20,13 +20,24 @@ Built because the existing third-party Robinhood MCPs expire mid-session, lack a
 
 Note: Robinhood's API does **not** support true OCO bracket orders for stocks. Take-profit is handled via the partial-exit framework, not paired with the stop. Once shares are protected by a stop, RH won't accept a second sell-side order on the same shares — `partial_with_trail_rearm` exists because of this.
 
-**Setup grading (wraps the analysis scripts you already trust)**
+**Setup grading (in-process — no external scripts needed)**
 - Stack grade (float + RV + news)
 - Order book scan with OBI signal
-- Historicals breakout grade + measured move + stop suggestion
+- Historicals breakout grade + measured move + stop suggestion (with synthetic-today bar fallback when RH lags)
 - Float / short-interest squeeze grade
 - IV rank, options chain scan
 - Recent news with catalyst classification
+
+**Scanner suite (9 scanners covering directional + options edges)**
+- `scan_52w_breakouts` — confirmed momentum breakouts
+- `scan_squeeze_breakouts` — Bollinger compression precursors
+- `scan_sympathy_laggards` — day-2 sector catch-up plays
+- `scan_failed_breakouts` — intraday failed breakout shorts
+- `scan_all` — composite that runs the 3 directional scanners in parallel and ranks multi-signal stacks
+- `scan_premium_sellers` — pre-earnings iron condor candidates (with liquidity filter)
+- `scan_cheap_premium_buyers` — debit spread candidates from low-IV setups
+- `scan_iv_crush_drift` — post-earnings cheap options for drift plays
+- `scan_unusual_oi` + `snapshot_oi` / `find_oi_spikes` — OI anomaly detection (focused-list + daily-snapshot delta)
 
 **Trade lifecycle**
 - Structured trade log with partial-close support
@@ -48,7 +59,8 @@ This server fixes the first three. HTTP transport for claude.ai remote routines 
 ```bash
 git clone https://github.com/Horizon-Hawk/rh-mcp.git
 cd rh-mcp
-pip install -e .
+pip install -e ".[analysis]"          # base server + in-process scanners (yfinance + scipy)
+# optional: pip install -e ".[analysis,monitor]"  # adds GUI alert injector
 cp rh_config.example.json rh_config.json
 # edit rh_config.json with your RH credentials
 ```
