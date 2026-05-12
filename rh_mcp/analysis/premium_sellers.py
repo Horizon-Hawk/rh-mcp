@@ -31,21 +31,22 @@ MIN_DAYS_TO_EARNINGS = 7
 MAX_DAYS_TO_EARNINGS = 30
 MIN_IV_RANK = 70.0
 MIN_PRICE = 10.0          # options liquidity floor
-MIN_OPTION_OI = 50        # min OI on ATM options — guards against untradeable strikes
-MAX_BID_ASK_SPREAD_PCT = 30.0  # ATM strike bid/ask spread must be <= this % of mid
+MIN_OPTION_OI = 20        # min OI on wing strikes — even thin chains are tradeable above this
+MAX_BID_ASK_SPREAD_PCT = 50.0  # wing strike bid/ask spread must be <= this % of mid (loose; tight chains rare)
 MAX_IV_PARALLEL = 4       # cap parallel iv_rank calls to avoid rate limits
 
 DEFAULT_TOP_N = 15
 
 
 def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_pct: float) -> dict:
-    """Quick liquidity verdict on ATM options around current_price.
+    """Quick liquidity verdict on the WING strikes where iron condors actually trade.
 
-    Returns {"liquid": bool, "reason": str, "atm_call": {...}, "atm_put": {...}}.
-    Pulls the nearest expiry that's beyond a week (to avoid expiring-Friday noise)
-    and checks ATM call + ATM put for OI and bid/ask spread health.
+    Returns {"liquid": bool, "reason": str, "wing_call": {...}, "wing_put": {...}}.
+    Iron condors sell strikes at ~0.20 delta, typically 8-12% OTM. ATM strikes
+    have near-zero OI on many liquid names because nobody holds them long-term.
+    Checking the wings is the correct test for IC tradability.
 
-    Catches the BZ case: high IV rank but zero bids on short legs = untradeable.
+    Catches the BZ case: high IV rank but zero bids on the wing legs = untradeable.
     """
     try:
         chain = rh.options.get_chains(ticker)
@@ -55,7 +56,9 @@ def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_
     if not dates:
         return {"liquid": False, "reason": "no expiry dates"}
 
-    # Pick an expiry ~2-6 weeks out — far enough to be liquid, close enough to matter
+    # Pick an expiry ~1-6 weeks out. Loosened lower bound to 7 days to capture
+    # the actual short-DTE expiries iron condors use (e.g. DECK earnings Wed →
+    # 5/22 expiry, only 11 DTE, would have been skipped at 14-day floor).
     from datetime import date, datetime, timedelta
     today = date.today()
     target_expiry = None
@@ -65,11 +68,11 @@ def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_
         except ValueError:
             continue
         delta_days = (dt - today).days
-        if 14 <= delta_days <= 60:
+        if 7 <= delta_days <= 60:
             target_expiry = d
             break
     if not target_expiry:
-        return {"liquid": False, "reason": "no expiry in 14-60 day window"}
+        return {"liquid": False, "reason": "no expiry in 7-60 day window"}
 
     try:
         calls = rh.options.find_options_by_expiration(ticker, target_expiry, optionType="call") or []
@@ -79,11 +82,28 @@ def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_
     if not calls or not puts:
         return {"liquid": False, "reason": "no options at target expiry"}
 
-    def _nearest(rows):
-        return min(rows, key=lambda r: abs(float(r.get("strike_price", 0)) - current_price))
+    # Wing strikes — IC short legs trade in the ~delta-0.20 zone, roughly 7-15% OTM
+    # for typical-IV names. Scan a band on each side and pick the BEST-OI strike
+    # in the band — that's the strike a real IC structure would actually use.
+    def _best_oi_in_band(rows, low, high):
+        in_band = []
+        for r in rows:
+            try:
+                s = float(r.get("strike_price", 0))
+                oi = int(float(r.get("open_interest") or 0))
+            except (ValueError, TypeError):
+                continue
+            if low <= s <= high:
+                in_band.append((oi, r))
+        if not in_band:
+            return None
+        in_band.sort(key=lambda x: x[0], reverse=True)
+        return in_band[0][1]
 
-    atm_call = _nearest(calls)
-    atm_put = _nearest(puts)
+    wing_call = _best_oi_in_band(calls, current_price * 1.07, current_price * 1.15)
+    wing_put = _best_oi_in_band(puts, current_price * 0.85, current_price * 0.93)
+    if not wing_call or not wing_put:
+        return {"liquid": False, "reason": "no strikes in wing band"}
 
     def _check(row):
         try:
@@ -95,24 +115,26 @@ def _liquidity_check(ticker: str, current_price: float, min_oi: int, max_spread_
         mid = (bid + ask) / 2
         if oi < min_oi:
             return None, f"OI {oi} < {min_oi}"
+        if bid <= 0:
+            return None, "zero bid (can't sell premium)"
         if mid <= 0:
-            return None, "no mid (zero bid+ask)"
+            return None, "no mid"
         spread_pct = (ask - bid) / mid * 100 if mid > 0 else 999
         if spread_pct > max_spread_pct:
             return None, f"bid-ask {spread_pct:.0f}% > {max_spread_pct}%"
         return {"strike": float(row["strike_price"]), "bid": bid, "ask": ask, "oi": oi, "spread_pct": round(spread_pct, 1)}, None
 
-    call_info, call_err = _check(atm_call)
-    put_info, put_err = _check(atm_put)
+    call_info, call_err = _check(wing_call)
+    put_info, put_err = _check(wing_put)
 
     if call_err or put_err:
-        return {"liquid": False, "reason": f"call: {call_err or 'ok'} | put: {put_err or 'ok'}"}
+        return {"liquid": False, "reason": f"call wing: {call_err or 'ok'} | put wing: {put_err or 'ok'}"}
 
     return {
         "liquid": True,
         "expiry_checked": target_expiry,
-        "atm_call": call_info,
-        "atm_put": put_info,
+        "wing_call": call_info,
+        "wing_put": put_info,
     }
 
 
