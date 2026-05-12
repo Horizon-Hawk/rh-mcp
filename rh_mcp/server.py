@@ -578,6 +578,71 @@ def history_corpus_stats(csv_path: str | None = None) -> dict:
 
 
 @mcp.tool()
+def scan_float_rotation(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_vol_to_float_ratio: float = 1.0,
+    require_8k: bool = True,
+    require_bullish_8k: bool = True,
+    lookback_minutes: int = 480,
+    top_n: int = 10,
+) -> dict:
+    """Float-rotation breakout scanner — finds small caps (≤$3B, ≤100M
+    float) that have already traded ≥1x their float today AND have a
+    bullish 8-K filing in `lookback_minutes`. Edge stacks: forced supply
+    exhaustion + fundamental catalyst. Rank by vol/float × 8-K confidence.
+    """
+    from rh_mcp.analysis import float_rotation as _fr
+    try:
+        return _fr.analyze(
+            tickers=tickers, universe_file=universe_file,
+            min_vol_to_float_ratio=min_vol_to_float_ratio,
+            require_8k=require_8k, require_bullish_8k=require_bullish_8k,
+            lookback_minutes=lookback_minutes, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_float_rotation failed: {e}"}
+
+
+@mcp.tool()
+def quality_check(
+    tickers: list[str],
+    min_gross_margin: float = 0.30,
+    min_roe: float = 0.08,
+    max_debt_equity: float = 2.0,
+    min_profit_margin: float = 0.02,
+) -> dict:
+    """Quality overlay for any setup: gross margin, ROE, D/E, profit margin.
+    Returns is_quality + failing_checks per ticker. Use to gate small-cap
+    entries — junk small caps that pass technicals fail this filter."""
+    from rh_mcp.analysis import quality_filter as _qf
+    try:
+        return _qf.analyze(
+            tickers, min_gross_margin=min_gross_margin, min_roe=min_roe,
+            max_debt_equity=max_debt_equity, min_profit_margin=min_profit_margin,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"quality_check failed: {e}"}
+
+
+@mcp.tool()
+def liquidity_check(
+    ticker: str,
+    price: float,
+    side: str = "long",
+    market_cap: float | None = None,
+) -> dict:
+    """Pre-entry order-book sanity check. Stricter thresholds for small
+    caps (<$1B): spread ≤0.75%, depth ≥30 levels, entry-side wall ≥0.35%
+    away. Call before any small-cap order_id placement."""
+    from rh_mcp.analysis import liquidity_guard as _lg
+    try:
+        return _lg.check(ticker, price, side=side, market_cap=market_cap)
+    except Exception as e:
+        return {"success": False, "error": f"liquidity_check failed: {e}"}
+
+
+@mcp.tool()
 def scan_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
