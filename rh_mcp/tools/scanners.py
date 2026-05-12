@@ -104,6 +104,127 @@ def scan_unusual_oi(
         return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
 
 
+def scan_pead(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_since_earnings: int = 5,
+    max_days_since_earnings: int = 30,
+    min_eps_beat_pct: float = 5.0,
+    min_gap_pct: float = 3.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    top_n: int = 15,
+) -> dict:
+    """Post-Earnings Announcement Drift: stocks 5-30 days past an earnings beat
+    with gap-up confirmation, drift still intact. Strongest academic prior in
+    the suite (Bernard & Thomas 1989).
+    """
+    from rh_mcp.analysis import pead
+    try:
+        return pead.analyze(
+            tickers=tickers, universe_file=universe_file,
+            min_days_since_earnings=min_days_since_earnings,
+            max_days_since_earnings=max_days_since_earnings,
+            min_eps_beat_pct=min_eps_beat_pct,
+            min_gap_pct=min_gap_pct,
+            min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_pead failed: {e}"}
+
+
+def scan_momentum_12_1(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    top_n: int = 20,
+) -> dict:
+    """Jegadeesh-Titman cross-sectional momentum: rank universe by 12-month
+    return excluding the most recent month. Portfolio sleeve signal (hold
+    1-3 months, monthly rebalance), not single-trade entry.
+    """
+    from rh_mcp.analysis import momentum_12_1
+    try:
+        return momentum_12_1.analyze(
+            tickers=tickers, universe_file=universe_file,
+            min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_momentum_12_1 failed: {e}"}
+
+
+def scan_capitulation_reversal(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_vol_ratio_yesterday: float = 3.0,
+    min_decline_pct_yesterday: float = 5.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 500_000,
+    top_n: int = 15,
+) -> dict:
+    """Two-bar capitulation+reversal: yesterday ≥3x vol on ≥5% decline with
+    close in bottom 25% of range; today reversal (close in top 50% of range).
+    """
+    from rh_mcp.analysis import capitulation_reversal
+    try:
+        return capitulation_reversal.analyze(
+            tickers=tickers, universe_file=universe_file,
+            min_vol_ratio_yesterday=min_vol_ratio_yesterday,
+            min_decline_pct_yesterday=min_decline_pct_yesterday,
+            min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_capitulation_reversal failed: {e}"}
+
+
+def scan_rsi2_extremes(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    oversold_threshold: float = 5.0,
+    overbought_threshold: float = 95.0,
+    min_price: float = 5.0,
+    top_n: int = 15,
+) -> dict:
+    """Connors RSI(2) mean reversion: oversold (RSI(2) < 5) in uptrend → long
+    signal; overbought (RSI(2) > 95) in downtrend → short signal. 200-SMA
+    trend filter mandatory.
+    """
+    from rh_mcp.analysis import rsi2_extremes
+    try:
+        return rsi2_extremes.analyze(
+            tickers=tickers, universe_file=universe_file,
+            oversold_threshold=oversold_threshold,
+            overbought_threshold=overbought_threshold,
+            min_price=min_price, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_rsi2_extremes failed: {e}"}
+
+
+def scan_buyback_announcements(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    max_days_since_announcement: int = 14,
+    min_price: float = 5.0,
+    min_market_cap: float = 500_000_000,
+    top_n: int = 15,
+) -> dict:
+    """Recent buyback announcements: stocks with new repurchase authorizations
+    in the last N days. Ranked by buyback size as % of market cap when known.
+    Long holding period (3-6 months) — treat as swing watch list.
+    """
+    from rh_mcp.analysis import buyback_announcements
+    try:
+        return buyback_announcements.analyze(
+            tickers=tickers, universe_file=universe_file,
+            max_days_since_announcement=max_days_since_announcement,
+            min_price=min_price, min_market_cap=min_market_cap, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_buyback_announcements failed: {e}"}
+
+
 def snapshot_oi(tickers: list[str]) -> dict:
     """Snapshot today's OI for the given tickers. Writes per-ticker JSON to
     RH_OI_HISTORY_DIR/YYYY-MM-DD/. Run daily after close to build the history

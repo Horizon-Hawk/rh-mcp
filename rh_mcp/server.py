@@ -339,6 +339,111 @@ def scan_unusual_oi(
 
 
 @mcp.tool()
+def scan_pead(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_since_earnings: int = 5,
+    max_days_since_earnings: int = 30,
+    min_eps_beat_pct: float = 5.0,
+    min_gap_pct: float = 3.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    top_n: int = 15,
+) -> dict:
+    """Post-Earnings Announcement Drift: stocks 5-30 days past an earnings
+    beat with gap-up confirmation, drift still intact. Bernard & Thomas 1989 anomaly.
+    """
+    return scanners.scan_pead(
+        tickers=tickers, universe_file=universe_file,
+        min_days_since_earnings=min_days_since_earnings,
+        max_days_since_earnings=max_days_since_earnings,
+        min_eps_beat_pct=min_eps_beat_pct, min_gap_pct=min_gap_pct,
+        min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_momentum_12_1(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    top_n: int = 20,
+) -> dict:
+    """Jegadeesh-Titman 12-1 cross-sectional momentum. Portfolio-construction
+    signal — top names ranked by 12-month return excluding most recent month.
+    Hold 1-3 months, monthly rebalance.
+    """
+    return scanners.scan_momentum_12_1(
+        tickers=tickers, universe_file=universe_file,
+        min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_capitulation_reversal(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_vol_ratio_yesterday: float = 3.0,
+    min_decline_pct_yesterday: float = 5.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 500_000,
+    top_n: int = 15,
+) -> dict:
+    """Two-bar capitulation+reversal: yesterday ≥3x vol on ≥5% decline + close
+    in bottom 25% of range; today reversal candle. Bounce setup, 2:1 R:R with
+    stop below yesterday's low.
+    """
+    return scanners.scan_capitulation_reversal(
+        tickers=tickers, universe_file=universe_file,
+        min_vol_ratio_yesterday=min_vol_ratio_yesterday,
+        min_decline_pct_yesterday=min_decline_pct_yesterday,
+        min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_rsi2_extremes(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    oversold_threshold: float = 5.0,
+    overbought_threshold: float = 95.0,
+    min_price: float = 5.0,
+    top_n: int = 15,
+) -> dict:
+    """Connors RSI(2) mean reversion: oversold in uptrend (long) or overbought
+    in downtrend (short). 200-SMA trend filter applied. Returns separate
+    longs[] and shorts[] lists.
+    """
+    return scanners.scan_rsi2_extremes(
+        tickers=tickers, universe_file=universe_file,
+        oversold_threshold=oversold_threshold,
+        overbought_threshold=overbought_threshold,
+        min_price=min_price, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_buyback_announcements(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    max_days_since_announcement: int = 14,
+    min_price: float = 5.0,
+    min_market_cap: float = 500_000_000,
+    top_n: int = 15,
+) -> dict:
+    """Recent buyback announcements: stocks with new repurchase authorizations
+    in last N days. Ranked by buyback size as % of market cap. Long holding
+    period (3-6 months) — swing watch list, not direct entry.
+    """
+    return scanners.scan_buyback_announcements(
+        tickers=tickers, universe_file=universe_file,
+        max_days_since_announcement=max_days_since_announcement,
+        min_price=min_price, min_market_cap=min_market_cap, top_n=top_n,
+    )
+
+
+@mcp.tool()
 def snapshot_oi(tickers: list[str]) -> dict:
     """Snapshot today's OI for tickers. Writes JSON to RH_OI_HISTORY_DIR/YYYY-MM-DD/.
     Run daily after close to build the OI delta history.
