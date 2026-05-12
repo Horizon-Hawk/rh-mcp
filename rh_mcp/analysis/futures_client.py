@@ -144,9 +144,34 @@ def get_positions(account_id: str | None = None) -> list[dict]:
     return r.json().get("results", []) or []
 
 
-def get_orders(account_id: str | None = None, limit: int = 50) -> list[dict]:
-    """Order history (most recent first). `limit` is server-side paging — fetch
-    multiple pages by following the `next` token if larger history is needed.
+def get_orders(
+    account_id: str | None = None,
+    limit: int = 50,
+    contract_type: str = "OUTRIGHT",
+    rhs_account_number: str = "588784215",
+) -> list[dict]:
+    """Order history with full schema (most recent first).
+
+    Uses the root-level /ceres/v1/orders endpoint which returns richer data
+    than the account-scoped one — includes orderState/derivedState, fees,
+    executions, realizedPnl, limitPrice/stopPrice/averagePrice, etc.
+
+    contract_type: OUTRIGHT (single-leg) or SPREAD (multi-leg).
+    """
+    url = (
+        f"{CERES_BASE}/orders?pageSize={limit}"
+        f"&contractType={contract_type}"
+        f"&rhsAccountNumber={rhs_account_number}"
+    )
+    r = rhh.SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    rows = r.json().get("results", []) or []
+    return rows
+
+
+def get_orders_account_scoped(account_id: str | None = None, limit: int = 50) -> list[dict]:
+    """Legacy account-scoped orders endpoint. Less data than get_orders() — use
+    only if you need the original API shape for compatibility.
     """
     if account_id is None:
         account_id = get_default_account_id()
