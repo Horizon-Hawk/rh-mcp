@@ -173,6 +173,19 @@ def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
     return r.json().get("results", []) or []
 
 
+def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
+    """Per-category buying power breakdown including futures equity + margin held.
+
+    Returns categorized line items: Cash, Margin total, Futures equity,
+    Futures margin held, Short cash, etc. The 'category' field is one of
+    'None', 'Futures', etc. Useful for showing where capacity is being used.
+    """
+    url = f"https://api.robinhood.com/accounts/{account_number}/buying_power_breakdown"
+    r = rhh.SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_contract_quantity(contract_uuid: str, account_id: str | None = None) -> dict:
     """Held / pending / net quantity for a specific futures contract."""
     if account_id is None:

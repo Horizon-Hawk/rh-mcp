@@ -395,6 +395,15 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
+    """Per-category buying power breakdown — Cash, Margin total, Futures equity,
+    Futures margin held, Short cash. The 'futures_equity' and 'futures_margin_held'
+    fields are surfaced separately at the top level for convenience.
+    """
+    return scanners.get_buying_power_breakdown(account_number)
+
+
+@mcp.tool()
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract (NQ, MNQ, ES, CL, GC etc.) via yfinance.
     Returns OHLCV bars suitable for backtesting and EOD analysis. RH's futures

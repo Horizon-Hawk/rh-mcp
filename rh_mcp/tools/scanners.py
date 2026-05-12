@@ -192,6 +192,32 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
+    """Per-category buying power breakdown: Cash, Margin total, Futures equity,
+    Futures margin held, etc. Single source of truth for unified account capacity.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        data = fc.get_buying_power_breakdown(account_number)
+        # Extract futures-specific items for convenient consumption
+        futures_items = {
+            item["title"]: item["value"]
+            for item in data.get("breakdown_items", [])
+            if (item.get("category") or "").lower() == "futures"
+        }
+        return {
+            "success": True,
+            "account_number": data.get("account_number"),
+            "account_type": data.get("account_type"),
+            "futures_equity": futures_items.get("Futures equity"),
+            "futures_margin_held": futures_items.get("Futures margin held"),
+            "breakdown_items": data.get("breakdown_items", []),
+            "raw": data,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract via yfinance (independent of RH).
 
