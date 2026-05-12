@@ -127,6 +127,22 @@ def get_futures_quote(ticker: str) -> dict:
         return {"success": False, "error": f"futures quote failed: {e}"}
 
 
+def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
+    """Historical bars for a futures contract via yfinance (independent of RH).
+
+    Friendly tickers (MNQ, NQ, ES, CL, GC) map to yfinance =F symbols. Dated
+    contracts (MNQM26) fall back to the continuous front-month series.
+
+    period: '1d'..'10y'|'ytd'|'max'  |  interval: '1m'..'1mo'
+    (note: 1m/5m only have ~7 days of history)
+    """
+    from rh_mcp.analysis import futures_history as fh
+    try:
+        return fh.get_bars(ticker, period=period, interval=interval)
+    except Exception as e:
+        return {"success": False, "error": f"futures history failed: {e}"}
+
+
 def register_futures_uuid(ticker: str, uuid: str) -> dict:
     """Persist a ticker → UUID mapping for futures contracts. Get the UUID by
     inspecting RH web app network calls for the futures quote endpoint.

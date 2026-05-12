@@ -348,6 +348,16 @@ def get_futures_quote(ticker: str) -> dict:
 
 
 @mcp.tool()
+def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
+    """Historical bars for a futures contract (NQ, MNQ, ES, CL, GC etc.) via yfinance.
+    Returns OHLCV bars suitable for backtesting and EOD analysis. RH's futures
+    historicals endpoint isn't reverse-engineered yet — this is the independent
+    data source until that lands.
+    """
+    return scanners.get_futures_history(ticker, period=period, interval=interval)
+
+
+@mcp.tool()
 def register_futures_uuid(ticker: str, uuid: str) -> dict:
     """Persist a futures ticker → contract UUID mapping. Get UUIDs by inspecting
     RH web app network calls (RH's futures API uses internal UUIDs, not tickers).
