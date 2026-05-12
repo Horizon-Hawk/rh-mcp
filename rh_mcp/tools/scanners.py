@@ -3,6 +3,107 @@
 from rh_mcp.lib.rh_client import client
 
 
+def scan_premium_sellers(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_to_earnings: int = 7,
+    max_days_to_earnings: int = 30,
+    min_iv_rank: float = 70.0,
+    min_price: float = 10.0,
+    top_n: int = 15,
+) -> dict:
+    """Find iron-condor / premium-selling candidates: earnings 7-30d out
+    AND iv_rank > 70. Sells elevated IV before earnings; theta + post-earnings
+    IV crush work for the position. ~70% win rate setups with defined risk.
+    """
+    from rh_mcp.analysis import premium_sellers
+    try:
+        return premium_sellers.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            min_days_to_earnings=min_days_to_earnings,
+            max_days_to_earnings=max_days_to_earnings,
+            min_iv_rank=min_iv_rank,
+            min_price=min_price,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_premium_sellers failed: {e}"}
+
+
+def scan_cheap_premium_buyers(
+    tickers: list[str],
+    max_iv_rank: float = 30.0,
+    min_price: float = 10.0,
+    top_n: int = 15,
+) -> dict:
+    """Filter tickers down to low-IV-rank candidates for debit spreads.
+    Designed to be fed scan_all / scan_squeeze / scan_52w output.
+    """
+    from rh_mcp.analysis import cheap_premium_buyers
+    try:
+        return cheap_premium_buyers.analyze(
+            tickers=tickers,
+            max_iv_rank=max_iv_rank,
+            min_price=min_price,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_cheap_premium_buyers failed: {e}"}
+
+
+def scan_iv_crush_drift(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    max_days_since_earnings: int = 5,
+    max_iv_rank: float = 30.0,
+    min_price: float = 10.0,
+    min_pct_since_earnings: float = 1.0,
+    top_n: int = 15,
+) -> dict:
+    """Post-earnings IV-crush drift scanner: earnings reported in last N days,
+    IV rank dropped to bottom range, stock still in uptrend. Buys cheap
+    post-earnings options while drift thesis is intact.
+    """
+    from rh_mcp.analysis import iv_crush_drift
+    try:
+        return iv_crush_drift.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            max_days_since_earnings=max_days_since_earnings,
+            max_iv_rank=max_iv_rank,
+            min_price=min_price,
+            min_pct_since_earnings=min_pct_since_earnings,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_iv_crush_drift failed: {e}"}
+
+
+def scan_unusual_oi(
+    tickers: list[str],
+    min_strike_oi: int = 100,
+    concentration_multiple: float = 5.0,
+    min_turnover_ratio: float = 0.5,
+    top_n: int = 15,
+) -> dict:
+    """Unusual options activity scanner: per-strike turnover (volume/OI) anomalies
+    + OI concentration vs. median strike. Focused-list tool — pass scan_all or
+    watchlist tickers, NOT a full universe.
+    """
+    from rh_mcp.analysis import unusual_oi
+    try:
+        return unusual_oi.analyze(
+            tickers=tickers,
+            min_strike_oi=min_strike_oi,
+            concentration_multiple=concentration_multiple,
+            min_turnover_ratio=min_turnover_ratio,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
+
+
 def scan_all(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

@@ -250,6 +250,95 @@ def get_fundamentals(ticker: str) -> dict:
 
 
 @mcp.tool()
+def scan_premium_sellers(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_to_earnings: int = 7,
+    max_days_to_earnings: int = 30,
+    min_iv_rank: float = 70.0,
+    min_price: float = 10.0,
+    top_n: int = 15,
+) -> dict:
+    """Iron-condor / premium-selling candidates: earnings 7-30d out AND
+    iv_rank > 70. Sells elevated IV before earnings.
+    """
+    return scanners.scan_premium_sellers(
+        tickers=tickers,
+        universe_file=universe_file,
+        min_days_to_earnings=min_days_to_earnings,
+        max_days_to_earnings=max_days_to_earnings,
+        min_iv_rank=min_iv_rank,
+        min_price=min_price,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_cheap_premium_buyers(
+    tickers: list[str],
+    max_iv_rank: float = 30.0,
+    min_price: float = 10.0,
+    top_n: int = 15,
+) -> dict:
+    """Filter tickers (typically scan_all output) to low-IV-rank candidates
+    for debit spreads. Stock has directional setup + options are cheap = best
+    leverage zone.
+    """
+    return scanners.scan_cheap_premium_buyers(
+        tickers=tickers,
+        max_iv_rank=max_iv_rank,
+        min_price=min_price,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_iv_crush_drift(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    max_days_since_earnings: int = 5,
+    max_iv_rank: float = 30.0,
+    min_price: float = 10.0,
+    min_pct_since_earnings: float = 1.0,
+    top_n: int = 15,
+) -> dict:
+    """Post-earnings IV-crush drift: earnings reported in last N days, IV
+    crushed below threshold, stock still above 20d SMA. Cheap options +
+    intact drift thesis.
+    """
+    return scanners.scan_iv_crush_drift(
+        tickers=tickers,
+        universe_file=universe_file,
+        max_days_since_earnings=max_days_since_earnings,
+        max_iv_rank=max_iv_rank,
+        min_price=min_price,
+        min_pct_since_earnings=min_pct_since_earnings,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_unusual_oi(
+    tickers: list[str],
+    min_strike_oi: int = 100,
+    concentration_multiple: float = 5.0,
+    min_turnover_ratio: float = 0.5,
+    top_n: int = 15,
+) -> dict:
+    """Unusual options activity: per-strike volume/OI turnover and OI
+    concentration anomalies. Focused-list tool — pass scan_all output or
+    watchlist tickers, NOT a full universe.
+    """
+    return scanners.scan_unusual_oi(
+        tickers=tickers,
+        min_strike_oi=min_strike_oi,
+        concentration_multiple=concentration_multiple,
+        min_turnover_ratio=min_turnover_ratio,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
 def scan_all(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
