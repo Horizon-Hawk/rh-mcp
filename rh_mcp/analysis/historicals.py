@@ -7,6 +7,7 @@ base height, measured-move target, suggested stop, R:R, and an A/B/SKIP grade.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
 from statistics import mean
 
 import robin_stocks.robinhood as rh
@@ -17,6 +18,49 @@ VOLUME_THRESHOLD = 1.5
 BODY_THRESHOLD = 50.0
 MA_PERIOD = 20
 ATR_PERIOD = 14
+
+
+def _today_eastern() -> str:
+    """Today's date in YYYY-MM-DD using US Eastern wall clock (NYSE timezone)."""
+    # Approximate: UTC - 4 (EDT) or UTC - 5 (EST). Use -4 — close enough for a
+    # same-day comparison; off-by-one only matters between midnight and 1 AM ET.
+    return (datetime.now(timezone.utc) - timedelta(hours=4)).strftime("%Y-%m-%d")
+
+
+def _build_synthetic_today_bar(ticker: str) -> dict | None:
+    """Fetch today's 5-minute regular-session bars and aggregate into a daily-shape bar.
+
+    Used as a fallback when RH hasn't yet published today's daily bar (typical
+    mid-session and for an hour or two after close). Returns None on any error
+    or if there's no intraday data for today.
+    """
+    try:
+        bars = rh.stocks.get_stock_historicals(
+            ticker, interval="5minute", span="day", bounds="regular",
+        ) or []
+    except Exception:
+        return None
+    today = _today_eastern()
+    todays = [b for b in bars if (b.get("begins_at") or "").startswith(today)]
+    if not todays:
+        return None
+    try:
+        opens = float(todays[0]["open_price"])
+        closes = float(todays[-1]["close_price"])
+        highs = max(float(b["high_price"]) for b in todays)
+        lows = min(float(b["low_price"]) for b in todays)
+        vols = sum(int(b["volume"]) for b in todays)
+    except (KeyError, ValueError, TypeError):
+        return None
+    return {
+        "date": today,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": vols,
+        "synthetic": True,
+    }
 
 
 def _fetch_bars(tickers: list[str], span: str) -> dict[str, list[dict]]:
@@ -142,6 +186,7 @@ def _grade(ticker: str, bars: list[dict], spy_bars: list[dict]) -> dict:
     return {
         "ticker": ticker,
         "date": last["date"],
+        "synthetic_today": bool(last.get("synthetic")),
         "open": last["open"],
         "high": last["high"],
         "low": last["low"],
@@ -173,8 +218,14 @@ def _grade(ticker: str, bars: list[dict], spy_bars: list[dict]) -> dict:
     }
 
 
-def analyze(ticker: str, span: str = "3month") -> dict:
-    """Daily-bar setup grade for one ticker. Pulls SPY in the same API call."""
+def analyze(ticker: str, span: str = "3month", allow_synthetic_today: bool = True) -> dict:
+    """Daily-bar setup grade for one ticker. Pulls SPY in the same API call.
+
+    If RH hasn't yet published today's daily bar (common mid-session and during
+    the first hour after close), append a synthetic bar built from today's
+    aggregated 5-minute intraday data so the grading runs on the current
+    breakout candle, not yesterday's. Disable with allow_synthetic_today=False.
+    """
     ticker = ticker.upper()
     login()
     all_bars = _fetch_bars([ticker, "SPY"], span)
@@ -182,4 +233,12 @@ def analyze(ticker: str, span: str = "3month") -> dict:
     spy_bars = all_bars.get("SPY", [])
     if not bars:
         return {"ticker": ticker, "error": "no data returned"}
+
+    if allow_synthetic_today:
+        today = _today_eastern()
+        if bars[-1]["date"] < today:
+            synthetic = _build_synthetic_today_bar(ticker)
+            if synthetic and synthetic["date"] > bars[-1]["date"]:
+                bars = bars + [synthetic]
+
     return _grade(ticker, bars, spy_bars)
