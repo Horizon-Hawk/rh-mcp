@@ -72,8 +72,14 @@ def _load_universe(path: Path) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def _detect_gap_and_go(bars, idx: int, min_gap_pct: float = GAG_MIN_GAP_PCT) -> dict | None:
-    if idx < 21 or idx >= len(bars) - 5:
+def _detect_gap_and_go(
+    bars, idx: int,
+    min_gap_pct: float = GAG_MIN_GAP_PCT,
+    allow_no_forward: bool = False,
+) -> dict | None:
+    if idx < 21:
+        return None
+    if not allow_no_forward and idx >= len(bars) - 5:
         return None
     today = bars.iloc[idx]
     prior = bars.iloc[idx - 1]
@@ -106,8 +112,10 @@ def _detect_gap_and_go(bars, idx: int, min_gap_pct: float = GAG_MIN_GAP_PCT) -> 
     }
 
 
-def _detect_frd(bars, idx: int) -> dict | None:
-    if idx < FRD_MAX_LOOKBACK or idx >= len(bars) - 5:
+def _detect_frd(bars, idx: int, allow_no_forward: bool = False) -> dict | None:
+    if idx < FRD_MAX_LOOKBACK:
+        return None
+    if not allow_no_forward and idx >= len(bars) - 5:
         return None
     today = bars.iloc[idx]
     yesterday = bars.iloc[idx - 1]
@@ -318,6 +326,87 @@ def run(
             )
 
     return {"success": True, "signals_written": len(all_signals), "output": str(output_path)}
+
+
+def _scan_today_one(ticker: str, min_gap_pct: float) -> list[dict]:
+    """Live-scan: detect signals on the most recent bar (no forward window)."""
+    try:
+        df = yf.Ticker(ticker).history(period="60d", interval="1d", auto_adjust=False)
+    except Exception:
+        return []
+    if df is None or df.empty or len(df) < 25:
+        return []
+    idx = len(df) - 1
+    out: list[dict] = []
+    for detector, signal_name in (
+        (lambda b, i: _detect_gap_and_go(b, i, min_gap_pct=min_gap_pct, allow_no_forward=True), "gap_and_go"),
+        (lambda b, i: _detect_frd(b, i, allow_no_forward=True), "frd"),
+    ):
+        sig = detector(df, idx)
+        if not sig:
+            continue
+        t0 = float(df.iloc[idx]["Close"])
+        sig.update({
+            "ticker": ticker,
+            "date": df.index[idx].strftime("%Y-%m-%d"),
+            "current_close": round(t0, 4),
+        })
+        out.append(sig)
+    return out
+
+
+def scan_today(
+    tickers: list[str] | None = None,
+    universe_file: str | Path | None = None,
+    min_gap_pct: float = GAG_MIN_GAP_PCT,
+    signal_filter: str | None = None,  # 'gap_and_go' | 'frd' | None=both
+    top_n: int = 25,
+    workers: int = 8,
+) -> dict:
+    """Live scan for gap-and-go + FRD signals on today's bar (no forward
+    window required). Returns ranked candidates ready for trade decisions.
+
+    Args:
+        tickers: explicit list, or omit to load from universe_file.
+        universe_file: path to a universe; defaults to small_cap_universe.txt.
+        min_gap_pct: gap-and-go threshold (default 0.20).
+        signal_filter: 'gap_and_go' to only return gap signals; 'frd' for FRD only.
+        top_n: cap on returned candidates.
+    """
+    if tickers is None:
+        path = Path(universe_file) if universe_file else DEFAULT_UNIVERSE
+        tickers = _load_universe(path)
+    tickers = [t.strip().upper() for t in tickers if t and t.strip()]
+    if not tickers:
+        return {"success": False, "error": "no tickers"}
+
+    all_signals: list[dict] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_scan_today_one, t, min_gap_pct) for t in tickers]
+        for fut in concurrent.futures.as_completed(futures):
+            all_signals.extend(fut.result())
+
+    if signal_filter:
+        all_signals = [s for s in all_signals if s.get("signal_type") == signal_filter]
+
+    # Rank: gap signals by gap_pct × vol_ratio; FRD by run_pct
+    def _score(s: dict) -> float:
+        if s.get("signal_type") == "gap_and_go":
+            return (s.get("gap_pct") or 0) * (s.get("vol_ratio") or 0)
+        if s.get("signal_type") == "frd":
+            return s.get("run_pct") or 0
+        return 0.0
+
+    all_signals.sort(key=_score, reverse=True)
+    if top_n and len(all_signals) > top_n:
+        all_signals = all_signals[:top_n]
+
+    return {
+        "success": True,
+        "scanned_tickers": len(tickers),
+        "signals_found": len(all_signals),
+        "candidates": all_signals,
+    }
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

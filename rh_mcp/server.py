@@ -504,6 +504,41 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
 
 
 @mcp.tool()
+def scan_gap_and_go(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_gap_pct: float = 0.20,
+    top_n: int = 25,
+) -> dict:
+    """Live scan for gap-and-go signals: >=20% gap up, >=2x avg volume,
+    close above open. Defaults to small_cap_universe.txt — validated edge
+    on Finviz $300M-$2B caps. Penny universe shows weaker / shorter edge
+    (use 1-day hold for penny, 5-day for small-cap).
+    """
+    return scanners.scan_gap_and_go(
+        tickers=tickers, universe_file=universe_file,
+        min_gap_pct=min_gap_pct, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_frd(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    top_n: int = 25,
+) -> dict:
+    """Live scan for First Red Day signals (3+ green closes, ≥30% run,
+    then first red close). Trade direction is COUNTER-INTUITIVE: on
+    Finviz small-cap universe these BOUNCE for +117% over 12 months at
+    5-day hold (FRD-LONG). Penny stocks fade instead — do NOT trade FRD
+    signals on penny universe.
+    """
+    return scanners.scan_frd(
+        tickers=tickers, universe_file=universe_file, top_n=top_n,
+    )
+
+
+@mcp.tool()
 def classify_8k(
     accession_no: str,
     ticker: str | None = None,

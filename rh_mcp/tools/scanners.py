@@ -309,6 +309,45 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def scan_gap_and_go(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_gap_pct: float = 0.20,
+    top_n: int = 25,
+) -> dict:
+    """Live scan for gap-and-go signals on the latest bar across a universe.
+    Default threshold 20% gap (validated as the small-cap sweet spot).
+    """
+    from rh_mcp.analysis import momentum_backtest as _mb
+    try:
+        return _mb.scan_today(
+            tickers=tickers, universe_file=universe_file,
+            min_gap_pct=min_gap_pct, signal_filter="gap_and_go", top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_gap_and_go failed: {e}"}
+
+
+def scan_frd(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    top_n: int = 25,
+) -> dict:
+    """Live scan for First Red Day signals. Backtest on small-cap universe
+    shows FRD-LONG (bounce) returns +117% over 12 months — counter to
+    conventional FRD-short wisdom. Run on Finviz small-cap universe for the
+    validated edge; penny stocks DO NOT bounce (-30% on same signal).
+    """
+    from rh_mcp.analysis import momentum_backtest as _mb
+    try:
+        return _mb.scan_today(
+            tickers=tickers, universe_file=universe_file,
+            signal_filter="frd", top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_frd failed: {e}"}
+
+
 def classify_8k(
     accession_no: str,
     ticker: str | None = None,
