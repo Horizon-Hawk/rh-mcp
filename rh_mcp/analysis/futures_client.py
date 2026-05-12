@@ -198,6 +198,19 @@ def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
     return r.json().get("results", []) or []
 
 
+def get_recent_orders_unified(account_number: str = "588784215") -> list[dict]:
+    """Recent orders across ALL asset types (stocks, options, futures, crypto).
+
+    Uses /wormhole/bw/orders/recent — RH's unified order display. Each row has
+    `assetType` (FUTURES, EQUITY, OPTION, CRYPTO) so you can filter client-side.
+    Useful for tracking new fills/rejects across the whole account at once.
+    """
+    url = f"https://api.robinhood.com/wormhole/bw/orders/recent?accountNumber={account_number}"
+    r = rhh.SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    return r.json().get("results", []) or []
+
+
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     """Per-category buying power breakdown including futures equity + margin held.
 
