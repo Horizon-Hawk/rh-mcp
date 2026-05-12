@@ -90,6 +90,87 @@ def get_quotes(ids: str | Iterable[str]) -> dict:
     return r.json()
 
 
+# ---------------------------------------------------------------------------
+# Futures account / positions / orders — `ceres` namespace
+# ---------------------------------------------------------------------------
+
+CERES_BASE = "https://api.robinhood.com/ceres/v1"
+
+
+def list_accounts() -> list[dict]:
+    """List futures accounts on this user. Typical user has 1-2 (one live, sometimes
+    a duplicate for different status). Each account has its own UUID `id` field
+    used as the path scope for positions/orders/balances.
+    """
+    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/", timeout=15)
+    r.raise_for_status()
+    return r.json().get("results", []) or []
+
+
+def get_default_account_id() -> str | None:
+    """Convenience: pick the ACTIVE futures account that has activity (positions
+    or order history). RH users typically have 2 futures accounts under the same
+    accountNumber — pick the one that's actually being used. Override via env
+    var RH_FUTURES_ACCOUNT_ID if you want to pin a specific one.
+    """
+    import os
+    env_pin = os.environ.get("RH_FUTURES_ACCOUNT_ID")
+    if env_pin:
+        return env_pin
+    active = [a for a in list_accounts() if (a.get("status") or "").upper() == "ACTIVE"]
+    if not active:
+        return None
+    if len(active) == 1:
+        return active[0].get("id")
+    # Multi-account: pick the one with recent orders. Fall back to first if both empty.
+    for a in active:
+        try:
+            r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{a['id']}/orders/", timeout=10)
+            if r.status_code == 200 and r.json().get("results"):
+                return a["id"]
+        except Exception:
+            pass
+    return active[0].get("id")
+
+
+def get_positions(account_id: str | None = None) -> list[dict]:
+    """Open futures positions for the given account (or default)."""
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        return []
+    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/positions/", timeout=15)
+    r.raise_for_status()
+    return r.json().get("results", []) or []
+
+
+def get_orders(account_id: str | None = None, limit: int = 50) -> list[dict]:
+    """Order history (most recent first). `limit` is server-side paging — fetch
+    multiple pages by following the `next` token if larger history is needed.
+    """
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        return []
+    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/orders/", timeout=15)
+    r.raise_for_status()
+    rows = r.json().get("results", []) or []
+    return rows[:limit] if limit else rows
+
+
+def get_contract_quantity(contract_uuid: str, account_id: str | None = None) -> dict:
+    """Held / pending / net quantity for a specific futures contract."""
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        return {}
+    url = f"{CERES_BASE}/accounts/{account_id}/contract_quantities?contractIds={contract_uuid}"
+    r = rhh.SESSION.get(url, timeout=15)
+    r.raise_for_status()
+    results = r.json().get("results", []) or []
+    return results[0] if results else {}
+
+
 def get_quote_by_ticker(ticker: str) -> dict | None:
     """Convenience: look up UUID from cache, fetch quote, unwrap to flat dict.
 

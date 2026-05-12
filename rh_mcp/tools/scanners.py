@@ -150,6 +150,38 @@ def scan_futures_rsi2(
         return {"success": False, "error": f"scan_futures_rsi2 failed: {e}"}
 
 
+def list_futures_accounts() -> dict:
+    """List RH futures accounts on this user (separate from regular stock account).
+    Returns the futures account UUIDs needed for positions/orders endpoints.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        accts = fc.list_accounts()
+        return {"success": True, "count": len(accts), "accounts": accts}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_futures_positions(account_id: str | None = None) -> dict:
+    """Open futures positions for an RH futures account (uses default account if None)."""
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        positions = fc.get_positions(account_id)
+        return {"success": True, "count": len(positions), "positions": positions}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_futures_orders(account_id: str | None = None, limit: int = 50) -> dict:
+    """Futures order history (most recent first)."""
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        orders = fc.get_orders(account_id, limit=limit)
+        return {"success": True, "count": len(orders), "orders": orders}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract via yfinance (independent of RH).
 

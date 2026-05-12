@@ -366,6 +366,26 @@ def scan_futures_rsi2(
 
 
 @mcp.tool()
+def list_futures_accounts() -> dict:
+    """List RH futures accounts (separate UUID from regular stock account number).
+    Each account ID is needed as scope for positions/orders endpoints.
+    """
+    return scanners.list_futures_accounts()
+
+
+@mcp.tool()
+def get_futures_positions(account_id: str | None = None) -> dict:
+    """Open RH futures positions. Uses default ACTIVE account if account_id omitted."""
+    return scanners.get_futures_positions(account_id)
+
+
+@mcp.tool()
+def get_futures_orders(account_id: str | None = None, limit: int = 50) -> dict:
+    """RH futures order history (most recent first)."""
+    return scanners.get_futures_orders(account_id, limit=limit)
+
+
+@mcp.tool()
 def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -> dict:
     """Historical bars for a futures contract (NQ, MNQ, ES, CL, GC etc.) via yfinance.
     Returns OHLCV bars suitable for backtesting and EOD analysis. RH's futures
