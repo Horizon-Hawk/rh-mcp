@@ -98,7 +98,15 @@ def historicals(ticker: str) -> dict:
 
 def float_check(ticker: str) -> dict:
     """Float + short-interest squeeze discriminator: SQUEEZE / ELEVATED / NORMAL / LOW_RISK_SHORT."""
-    return _run_script("float_check.py", [ticker.upper()], timeout=45)
+    try:
+        from rh_mcp.analysis import float_check as _float_check
+    except ImportError as e:
+        return {"success": False, "error": f"in-process float_check unavailable: {e}"}
+    try:
+        data = _float_check.analyze(ticker.upper())
+    except Exception as e:
+        return {"success": False, "error": f"float_check failed: {e}"}
+    return {"success": True, "data": data}
 
 
 def iv_rank(ticker: str) -> dict:
