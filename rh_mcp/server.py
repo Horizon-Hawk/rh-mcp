@@ -361,17 +361,20 @@ def scan_pead(
     min_gap_pct: float = 3.0,
     min_price: float = 5.0,
     min_avg_volume: int = 200_000,
+    min_market_cap: float = 2_000_000_000,
     top_n: int = 15,
 ) -> dict:
     """Post-Earnings Announcement Drift: stocks 5-30 days past an earnings
-    beat with gap-up confirmation, drift still intact. Bernard & Thomas 1989 anomaly.
+    beat with gap-up confirmation. Default min_market_cap=$2B (mid+ caps where
+    the edge concentrates per our 1592-ticker backtest).
     """
     return scanners.scan_pead(
         tickers=tickers, universe_file=universe_file,
         min_days_since_earnings=min_days_since_earnings,
         max_days_since_earnings=max_days_since_earnings,
         min_eps_beat_pct=min_eps_beat_pct, min_gap_pct=min_gap_pct,
-        min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+        min_price=min_price, min_avg_volume=min_avg_volume,
+        min_market_cap=min_market_cap, top_n=top_n,
     )
 
 

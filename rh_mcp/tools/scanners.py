@@ -133,11 +133,13 @@ def scan_pead(
     min_gap_pct: float = 3.0,
     min_price: float = 5.0,
     min_avg_volume: int = 200_000,
+    min_market_cap: float = 2_000_000_000,
     top_n: int = 15,
 ) -> dict:
     """Post-Earnings Announcement Drift: stocks 5-30 days past an earnings beat
     with gap-up confirmation, drift still intact. Strongest academic prior in
-    the suite (Bernard & Thomas 1989).
+    the suite (Bernard & Thomas 1989). Default min_market_cap = $2B because the
+    backtest showed edge concentrates in mid+ caps. Set to 0 to scan all sizes.
     """
     from rh_mcp.analysis import pead
     try:
@@ -147,7 +149,8 @@ def scan_pead(
             max_days_since_earnings=max_days_since_earnings,
             min_eps_beat_pct=min_eps_beat_pct,
             min_gap_pct=min_gap_pct,
-            min_price=min_price, min_avg_volume=min_avg_volume, top_n=top_n,
+            min_price=min_price, min_avg_volume=min_avg_volume,
+            min_market_cap=min_market_cap, top_n=top_n,
         )
     except Exception as e:
         return {"success": False, "error": f"scan_pead failed: {e}"}

@@ -30,6 +30,8 @@ MIN_EPS_BEAT_PCT = 5.0          # actual must beat estimate by >= this %
 MIN_GAP_PCT = 3.0               # print-day open must be >= this % above prior close
 MIN_PRICE = 5.0
 MIN_AVG_VOLUME = 200_000
+MIN_MARKET_CAP = 2_000_000_000  # $2B floor — backtest showed edge concentrates in mid+ caps
+                                # (full universe: 52.7% win / +1.02% avg vs large-cap 64.7% win / +3.42% avg)
 
 DEFAULT_TOP_N = 15
 _BATCH_SIZE = 75
@@ -148,7 +150,16 @@ def _fetch_fundamentals(tickers: list[str]) -> dict[str, dict]:
                 avg_vol = float(f.get("average_volume") or 0)
             except (ValueError, TypeError):
                 avg_vol = 0
-            out[sym.upper()] = {"avg_volume": avg_vol, "sector": f.get("sector"), "industry": f.get("industry")}
+            try:
+                market_cap = float(f.get("market_cap") or 0)
+            except (ValueError, TypeError):
+                market_cap = 0
+            out[sym.upper()] = {
+                "avg_volume": avg_vol,
+                "market_cap": market_cap,
+                "sector": f.get("sector"),
+                "industry": f.get("industry"),
+            }
         time.sleep(_BATCH_SLEEP)
     return out
 
@@ -162,9 +173,15 @@ def analyze(
     min_gap_pct: float = MIN_GAP_PCT,
     min_price: float = MIN_PRICE,
     min_avg_volume: int = MIN_AVG_VOLUME,
+    min_market_cap: float = MIN_MARKET_CAP,
     top_n: int = DEFAULT_TOP_N,
 ) -> dict:
-    """Find PEAD candidates: recent earnings beat, gap-up confirmation, drift intact."""
+    """Find PEAD candidates: recent earnings beat, gap-up confirmation, drift intact.
+
+    Default min_market_cap = $2B based on tonight's universe-wide backtest
+    showing the PEAD edge concentrates in mid+ caps (large-cap 64.7% win rate
+    vs full-universe 52.7%). Set to 0 to scan all qualifying names.
+    """
     if tickers is None:
         if universe_file is None:
             universe_file = Path("stock_universe.txt")
@@ -205,9 +222,12 @@ def analyze(
             fund = funds.get(b["ticker"], {})
             if fund.get("avg_volume", 0) < min_avg_volume:
                 continue
+            if fund.get("market_cap", 0) < min_market_cap:
+                continue
             candidates.append({
                 "ticker": b["ticker"],
                 "price": gd["today_close"],
+                "market_cap": fund.get("market_cap"),
                 "earnings_date": b["earnings_date"],
                 "days_since_earnings": b["days_ago"],
                 "eps_estimate": b["eps_estimate"],
