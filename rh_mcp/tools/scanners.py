@@ -309,6 +309,89 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def classify_8k(
+    accession_no: str,
+    ticker: str | None = None,
+    filing_url: str | None = None,
+    cik: str | None = None,
+    force_refresh: bool = False,
+) -> dict:
+    """FinBERT sentiment classification on an 8-K filing body. Returns
+    direction (long/short/neutral), confidence 0-1, reasoning, and top key
+    clauses. Result is cached forever per accession_no.
+
+    Provide at least one of: filing_url (best), cik, or ticker. The body is
+    fetched via the shared EDGAR client (User-Agent header required).
+    """
+    from rh_mcp.analysis import edgar_finbert_classifier as _fb
+    try:
+        return _fb.classify_8k_filing(
+            accession_no=accession_no, ticker=ticker,
+            filing_url=filing_url, cik=cik, force_refresh=force_refresh,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"classify_8k failed: {e}"}
+
+
+def classify_8k_historical(
+    accession_no: str,
+    ticker: str | None = None,
+    filing_url: str | None = None,
+    cik: str | None = None,
+    csv_path: str | None = None,
+    with_body_keywords: bool = True,
+    force_refresh: bool = False,
+) -> dict:
+    """Classify an 8-K by nearest-signature lookup against the historical
+    reaction corpus produced by build_8k_history. Direction is derived from
+    the average next-day return of historical filings with the same item-codes
+    + body-keywords signature.
+    """
+    from rh_mcp.analysis import edgar_history_classifier as _hc
+    try:
+        return _hc.classify_8k_historical(
+            accession_no=accession_no, ticker=ticker,
+            filing_url=filing_url, cik=cik,
+            csv_path=csv_path, with_body_keywords=with_body_keywords,
+            force_refresh=force_refresh,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"classify_8k_historical failed: {e}"}
+
+
+def build_8k_history(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    lookback_days: int = 365,
+    output_path: str | None = None,
+    with_body_keywords: bool = False,
+    max_tickers: int | None = None,
+) -> dict:
+    """Build the 8-K → market-reaction CSV corpus. Run periodically (monthly)
+    to keep the corpus fresh. with_body_keywords=True adds richer features at
+    ~5x build cost. max_tickers caps the universe — useful for smoke tests.
+    """
+    from rh_mcp.analysis import edgar_history_builder as _hb
+    try:
+        return _hb.build_corpus(
+            tickers=tickers, universe_file=universe_file,
+            lookback_days=lookback_days, output_path=output_path,
+            with_body_keywords=with_body_keywords, max_tickers=max_tickers,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"build_8k_history failed: {e}"}
+
+
+def history_corpus_stats(csv_path: str | None = None) -> dict:
+    """Summary of the loaded 8-K history corpus — row count, label
+    distribution, top item codes. Use to diagnose coverage gaps."""
+    from rh_mcp.analysis import edgar_history_classifier as _hc
+    try:
+        return _hc.corpus_stats(csv_path=csv_path)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def scan_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

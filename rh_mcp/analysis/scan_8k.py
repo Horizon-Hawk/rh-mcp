@@ -186,6 +186,57 @@ def analyze(
     if top_n and len(matched) > top_n:
         matched = matched[:top_n]
 
+    # Step 7 (deep_scan only): historical-reaction classifier is the primary
+    # arbiter, FinBERT is fallback. The historical classifier asks: "how did
+    # the market react to past filings with this same item-codes + body-keyword
+    # signature?" — ground-truth labels, not inferred sentiment. FinBERT only
+    # gets a vote when no historical matches exist.
+    if deep_scan and matched:
+        from rh_mcp.analysis import edgar_history_classifier as _hc
+        from rh_mcp.analysis import edgar_finbert_classifier as _fb
+        for f in matched:
+            acc = f.get("accession_no")
+            if not acc:
+                continue
+            hc_res = _hc.classify_8k_historical(
+                accession_no=acc,
+                ticker=f.get("ticker"),
+                filing_url=f.get("filing_url"),
+                cik=f.get("cik"),
+            )
+            if hc_res.get("success"):
+                f["historical_direction"] = hc_res.get("direction")
+                f["historical_confidence"] = hc_res.get("confidence")
+                f["historical_reasoning"] = hc_res.get("reasoning")
+                f["historical_stats"] = hc_res.get("stats")
+                if (
+                    hc_res.get("direction") in ("long", "short")
+                    and hc_res.get("confidence", 0) >= 0.5
+                ):
+                    f["direction"] = hc_res["direction"]
+                    f["direction_source"] = "historical_reactions"
+                    continue
+            else:
+                f["historical_error"] = hc_res.get("error")
+
+            # Fallback: FinBERT sentiment on the filing body
+            fb_res = _fb.classify_8k_filing(
+                accession_no=acc, ticker=f.get("ticker"),
+                filing_url=f.get("filing_url"), cik=f.get("cik"),
+            )
+            if not fb_res.get("success"):
+                f["finbert_error"] = fb_res.get("error")
+                continue
+            f["finbert_direction"] = fb_res.get("direction")
+            f["finbert_confidence"] = fb_res.get("confidence")
+            f["finbert_reasoning"] = fb_res.get("reasoning")
+            if (
+                fb_res.get("direction") in ("long", "short")
+                and fb_res.get("confidence", 0) >= 0.7
+            ):
+                f["direction"] = fb_res["direction"]
+                f["direction_source"] = "finbert_fallback"
+
     longs = [m for m in matched if m.get("direction") == "long"]
     shorts = [m for m in matched if m.get("direction") == "short"]
 

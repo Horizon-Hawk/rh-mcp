@@ -467,6 +467,80 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
 
 
 @mcp.tool()
+def classify_8k(
+    accession_no: str,
+    ticker: str | None = None,
+    filing_url: str | None = None,
+    cik: str | None = None,
+    force_refresh: bool = False,
+) -> dict:
+    """FinBERT-based sentiment classifier for a single 8-K filing. Returns
+    direction (long/short/neutral), confidence (0-1), reasoning, and key
+    clauses extracted from the filing body. Result is cached per accession_no.
+    Provide at least one of: filing_url (best), cik, or ticker — needed to
+    locate the filing on EDGAR. Requires `transformers` and `torch` installed
+    (pip install rh-mcp[finbert]).
+    """
+    return scanners.classify_8k(
+        accession_no=accession_no, ticker=ticker,
+        filing_url=filing_url, cik=cik, force_refresh=force_refresh,
+    )
+
+
+@mcp.tool()
+def classify_8k_historical(
+    accession_no: str,
+    ticker: str | None = None,
+    filing_url: str | None = None,
+    cik: str | None = None,
+    csv_path: str | None = None,
+    with_body_keywords: bool = True,
+    force_refresh: bool = False,
+) -> dict:
+    """Classify an 8-K by nearest-signature lookup against the historical
+    market-reaction corpus. Direction comes from the average next-day return
+    of historical filings sharing the same item-codes + body-keyword
+    signature. Requires the corpus built first via build_8k_history.
+    """
+    return scanners.classify_8k_historical(
+        accession_no=accession_no, ticker=ticker,
+        filing_url=filing_url, cik=cik,
+        csv_path=csv_path, with_body_keywords=with_body_keywords,
+        force_refresh=force_refresh,
+    )
+
+
+@mcp.tool()
+def build_8k_history(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    lookback_days: int = 365,
+    output_path: str | None = None,
+    with_body_keywords: bool = False,
+    max_tickers: int | None = None,
+) -> dict:
+    """Build the 8-K → market-reaction CSV corpus that powers
+    classify_8k_historical. Walks per-ticker 8-K history via EDGAR, computes
+    next-day and 5-day returns from yfinance, labels each filing. Slow first
+    build (~15-25 min item-codes-only, 45-60 min with body keywords) — run
+    periodically (monthly) thereafter to keep fresh. Default output:
+    ~/.edgar_cache/8k_history.csv.
+    """
+    return scanners.build_8k_history(
+        tickers=tickers, universe_file=universe_file,
+        lookback_days=lookback_days, output_path=output_path,
+        with_body_keywords=with_body_keywords, max_tickers=max_tickers,
+    )
+
+
+@mcp.tool()
+def history_corpus_stats(csv_path: str | None = None) -> dict:
+    """Summary of the loaded 8-K history corpus: row count, label
+    distribution, top item codes. Use to verify build coverage."""
+    return scanners.history_corpus_stats(csv_path=csv_path)
+
+
+@mcp.tool()
 def scan_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

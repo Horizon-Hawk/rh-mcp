@@ -53,6 +53,12 @@ analysis = [
     "yfinance>=0.2.40",
     "scipy>=1.10.0",
 ]
+# FinBERT 8-K body classifier — local CPU inference, no API key.
+# Required by rh_mcp.analysis.edgar_finbert_classifier and scan_8k(deep_scan=True).
+finbert = [
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+]
 
 [project.scripts]
 rh-mcp = "rh_mcp.server:main"

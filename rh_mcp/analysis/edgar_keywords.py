@@ -46,7 +46,14 @@ PATTERN_LIB: list[tuple[str, str, str, float]] = [
     ("delisting_notice", r"\b(delisting\s+notice|notice\s+of\s+delisting|continued\s+listing\s+(requirement|standard))\b", "short", 0.80),
 
     # --- LONG signals: positive deal / capital return ---
-    ("definitive_agreement_acquisition", r"\bdefinitive\s+(merger\s+)?agreement.*acquir", "long", 0.70),
+    # Require an acquisition verb form ("to acquire" / "will acquire" / "to be
+    # acquired" / "will be acquired") within ~150 non-period chars of the
+    # "definitive agreement" phrase. Original `.*acquir` bridged unrelated
+    # clauses and matched "acquiring person" definitional language in PIPE/SPA
+    # exhibits, false-positiving on dilutive filings.
+    ("definitive_agreement_acquisition",
+     r"\bdefinitive\s+(merger\s+|purchase\s+)?agreement\b[^.]{0,150}\b(to\s+acquire|will\s+acquire|will\s+be\s+acquired|to\s+be\s+acquired)\b",
+     "long", 0.70),
     ("acquired_by", r"\b(to\s+be\s+acquired\s+by|agreed?\s+to\s+sell\s+the\s+company)\b", "long", 0.90),
     ("buyback_authorized", r"\b(repurchase|buyback)\s+(program|authorization|of\s+up\s+to)\b", "long", 0.70),
     ("dividend_increase", r"\b(increase[ds]?\s+(quarterly\s+)?(dividend|distribution)|dividend\s+raised)\b", "long", 0.65),
@@ -60,6 +67,19 @@ PATTERN_LIB: list[tuple[str, str, str, float]] = [
     ("credit_facility_amendment", r"\bamendment\s+(no\.?\s*\d+\s+)?to\s+(credit|loan)\s+(agreement|facility)\b", "flag", 0.40),
     ("convertible_debt_issuance", r"\bconvertible\s+(senior\s+)?notes?\b", "flag", 0.50),
     ("share_dilution_pipe", r"\b(PIPE|private\s+placement)\s+(financing|transaction)\b", "short", 0.65),
+
+    # --- Dilutive offering structure (used as features, not just direction) ---
+    # These appear in 1.01 filings that ARE dilutive — registered directs, follow-ons,
+    # underwritten offerings, shelf takedowns. The keyword scanner alone is too weak to
+    # bet on these (1.01 acquisitions use similar phrasing for the deal itself), but they
+    # are very useful as FEATURES in the historical-reaction classifier.
+    ("registered_direct_offering", r"\bregistered\s+direct\s+offering\b", "short", 0.80),
+    ("underwritten_offering", r"\bunderwritten\s+(public\s+)?offering\b", "short", 0.75),
+    ("follow_on_offering", r"\bfollow[- ]?on\s+offering\b", "short", 0.75),
+    ("shelf_takedown", r"\bprospectus\s+supplement\b", "flag", 0.50),
+    ("securities_purchase_agreement", r"\bsecurities\s+purchase\s+agreement\b", "flag", 0.55),
+    ("issue_and_sell_shares", r"\bissue\s+and\s+sell\b[^.]{0,200}\bshares\b", "short", 0.70),
+    ("at_the_market_offering", r"\bat[- ]the[- ]market\s+(offering|equity\s+offering\s+program|sales\s+agreement)\b", "short", 0.75),
 ]
 
 # Compile once
@@ -94,33 +114,81 @@ def _strip_html(html: str) -> str:
 
 
 def _filing_documents_from_index(index_url: str) -> list[str]:
-    """Given an 8-K filing's index page URL, return URLs of the actual .htm
-    documents (the body + exhibits). The index page lists files in a table
-    with the format <a href="...">filename.htm</a>."""
+    """Given an 8-K filing's index page URL, return URLs of the actual document
+    files ordered for narrative extraction: 8-K body first, then EX-99 (press
+    release), then other exhibits. Drops graphics and unrelated files.
+
+    Handles two EDGAR quirks:
+    1. iXBRL-wrapped 8-K bodies are linked as `/ix?doc=/Archives/...`. That URL
+       returns a JS-only viewer page with no narrative text. We rewrite to the
+       underlying document path.
+    2. The index page table has a Type column ('8-K', 'EX-5.1', 'EX-99.1',
+       'GRAPHIC', etc.) we parse for priority ordering.
+    """
     try:
         html = _edgar._http_get(index_url, accept="text/html").decode("utf-8", errors="ignore")
     except Exception:
         return []
-    # Find all href="...htm" links — the filing docs are .htm files in the same archive path
-    base = index_url.rsplit("/", 1)[0]
-    hrefs = re.findall(r'href="([^"]+\.htm?)"', html, re.IGNORECASE)
-    docs = []
-    for h in hrefs:
-        # Skip the index page itself and parent navigation
-        if "-index" in h or h.startswith("#") or "Archives/edgar" not in h:
+
+    # Parse the Document Format Files table — each <tr> holds Seq, Description,
+    # Document (with <a href>), Type, Size. We need (href, type) pairs.
+    docs: list[tuple[str, str]] = []
+    # Match each row's href + the Type cell that follows within the same row
+    row_pattern = re.compile(
+        r'<tr[^>]*>.*?<a\s+href="([^"]+\.html?)"[^>]*>.*?</a>.*?'
+        r'<td[^>]*>\s*([A-Za-z0-9.\-/]+)\s*</td>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for m in row_pattern.finditer(html):
+        href, doc_type = m.group(1), (m.group(2) or "").strip().upper()
+        if "Archives/edgar" not in href or "-index" in href:
             continue
-        if h.startswith("/"):
-            docs.append("https://www.sec.gov" + h)
-        elif h.startswith("http"):
-            docs.append(h)
-    # De-dupe while preserving order
-    seen = set()
-    out = []
-    for d in docs:
-        if d not in seen:
-            seen.add(d)
-            out.append(d)
-    return out[:5]  # cap at 5 documents — first few are typically the body + key exhibits
+        if doc_type in ("GRAPHIC", "ZIP", "XML"):
+            continue
+        # Unwrap iXBRL viewer URLs — `/ix?doc=/path` -> `/path`
+        if "/ix?doc=" in href:
+            href = href.split("/ix?doc=", 1)[1]
+        if href.startswith("/"):
+            href = "https://www.sec.gov" + href
+        elif not href.startswith("http"):
+            continue
+        docs.append((href, doc_type))
+
+    # Fallback: if table parsing yielded nothing (unusual format), use the
+    # legacy href-only scan so older filings still work.
+    if not docs:
+        for h in re.findall(r'href="([^"]+\.html?)"', html, re.IGNORECASE):
+            if "-index" in h or "Archives/edgar" not in h:
+                continue
+            if "/ix?doc=" in h:
+                h = h.split("/ix?doc=", 1)[1]
+            if h.startswith("/"):
+                h = "https://www.sec.gov" + h
+            elif not h.startswith("http"):
+                continue
+            docs.append((h, ""))
+
+    def _priority(doc_type: str) -> int:
+        t = doc_type.upper()
+        if t == "8-K":
+            return 0          # the body itself — always first
+        if t.startswith("EX-99"):
+            return 1          # press releases / supplemental info — high signal
+        if t.startswith("EX-10"):
+            return 2          # material contracts — often the actual agreement
+        if t.startswith("EX-"):
+            return 3          # legal opinions, consents, etc.
+        return 4
+
+    docs.sort(key=lambda d: _priority(d[1]))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for href, _ in docs:
+        if href not in seen:
+            seen.add(href)
+            out.append(href)
+    return out[:5]
 
 
 # Negation patterns to suppress — most legal boilerplate uses these forms.
