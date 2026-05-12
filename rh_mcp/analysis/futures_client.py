@@ -198,6 +198,23 @@ def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
     return r.json().get("results", []) or []
 
 
+def get_order_validation_rules(account_id: str | None = None) -> dict:
+    """Server-side order validation rules (max quantity, etc.) for this account.
+
+    GET on /ceres/v1/accounts/{id}/presubmit_order_validation returns the
+    config — e.g. {"globalMaxOrderQuantity": "500"}. The POST version validates
+    a specific order body against these rules without actually placing it.
+    """
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        return {}
+    url = f"{CERES_BASE}/accounts/{account_id}/presubmit_order_validation"
+    r = rhh.SESSION.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_order_detail(order_id: str, asset_type: str = "FUTURES", account_number: str = "588784215") -> dict:
     """Fetch full detail for a specific order by ID via /wormhole/bw/orders/{id}.
 
