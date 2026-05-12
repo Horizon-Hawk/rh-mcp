@@ -49,17 +49,26 @@ def _load_universe_from_file(path: Path) -> list[str]:
 
 
 def _fetch_5y_bars(tickers: list[str]) -> dict[str, list[dict]]:
-    """Pull 5 years of daily bars per ticker, batched."""
+    """Pull 5 years of daily bars per ticker, batched. Retries on transient errors."""
     out: dict[str, list[dict]] = {t: [] for t in tickers}
     for i in range(0, len(tickers), _BATCH_SIZE):
         chunk = tickers[i:i + _BATCH_SIZE]
-        try:
-            raw = rh.stocks.get_stock_historicals(
-                chunk, interval="day", span="5year", bounds="regular",
-            ) or []
-        except Exception:
-            raw = []
+        raw = []
+        # Retry up to 3x on transient errors (502s, timeouts)
+        for attempt in range(3):
+            try:
+                raw = rh.stocks.get_stock_historicals(
+                    chunk, interval="day", span="5year", bounds="regular",
+                ) or []
+                break
+            except Exception:
+                if attempt == 2:
+                    raw = []
+                else:
+                    time.sleep(2.0 * (attempt + 1))  # 2s, 4s backoff
         for b in raw:
+            if not b or not isinstance(b, dict):
+                continue
             sym = (b.get("symbol") or "").upper()
             if sym not in out:
                 continue
