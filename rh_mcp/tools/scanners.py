@@ -104,6 +104,33 @@ def scan_unusual_oi(
         return {"success": False, "error": f"scan_unusual_oi failed: {e}"}
 
 
+def scan_8k(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    item_codes: list[str] | None = None,
+    lookback_minutes: int = 240,
+    recent_filings_count: int = 100,
+    top_n: int = 20,
+) -> dict:
+    """SEC 8-K filing scanner: surfaces recent material filings with high-signal
+    item codes. Default codes: 1.01 (Material Agreement, LONG bias), 3.02 (dilution),
+    4.01 (auditor change), 4.02 (financial restatement) — last three SHORT bias.
+
+    Returns candidates classified by direction. Hypothesis: market takes 1-5 days
+    to fully digest 8-K content; entering on filing day catches the drift.
+    Requires RH_EDGAR_USER_AGENT env var set to "Your Name your@email" per SEC policy.
+    """
+    from rh_mcp.analysis import scan_8k as _s8k
+    try:
+        return _s8k.analyze(
+            tickers=tickers, universe_file=universe_file,
+            item_codes=item_codes, lookback_minutes=lookback_minutes,
+            recent_filings_count=recent_filings_count, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_8k failed: {e}"}
+
+
 def backtest(
     tickers: list[str] | None = None,
     universe_file: str | None = None,

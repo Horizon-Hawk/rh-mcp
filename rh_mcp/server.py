@@ -339,6 +339,26 @@ def scan_unusual_oi(
 
 
 @mcp.tool()
+def scan_8k(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    item_codes: list[str] | None = None,
+    lookback_minutes: int = 240,
+    recent_filings_count: int = 100,
+    top_n: int = 20,
+) -> dict:
+    """SEC 8-K filing scanner. Default codes: 1.01 (long bias material agreement),
+    3.02/4.01/4.02 (short bias dilution/auditor change/restatement). Lookback in
+    minutes from now. Requires RH_EDGAR_USER_AGENT env var.
+    """
+    return scanners.scan_8k(
+        tickers=tickers, universe_file=universe_file,
+        item_codes=item_codes, lookback_minutes=lookback_minutes,
+        recent_filings_count=recent_filings_count, top_n=top_n,
+    )
+
+
+@mcp.tool()
 def backtest(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
