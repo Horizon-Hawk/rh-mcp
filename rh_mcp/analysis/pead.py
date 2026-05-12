@@ -30,8 +30,12 @@ MIN_EPS_BEAT_PCT = 5.0          # actual must beat estimate by >= this %
 MIN_GAP_PCT = 3.0               # print-day open must be >= this % above prior close
 MIN_PRICE = 5.0
 MIN_AVG_VOLUME = 200_000
-MIN_MARKET_CAP = 2_000_000_000  # $2B floor — backtest showed edge concentrates in mid+ caps
-                                # (full universe: 52.7% win / +1.02% avg vs large-cap 64.7% win / +3.42% avg)
+MIN_MARKET_CAP = 50_000_000_000  # $50B — backtested step-function in edge by size:
+                                 #   Full universe (1592, ≥$2B):    52.7% win / +1.02% avg / PF 1.23
+                                 #   Mega-cap subset (314, ≥$50B):  56.3% win / +2.47% avg / PF 1.74  <-- live default
+                                 #   Hand-picked 30 mega-caps:      64.7% win / +3.42% avg / PF 2.32 (but heavy survivorship bias)
+                                 # The $2B floor did nothing — the user's stock_universe.txt already pre-filters to mid+ caps.
+                                 # $50B is the sweet spot: real edge, enough names (314), survivorship pressure manageable.
 
 DEFAULT_TOP_N = 15
 _BATCH_SIZE = 75

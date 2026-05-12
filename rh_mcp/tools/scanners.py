@@ -133,13 +133,20 @@ def scan_pead(
     min_gap_pct: float = 3.0,
     min_price: float = 5.0,
     min_avg_volume: int = 200_000,
-    min_market_cap: float = 2_000_000_000,
+    min_market_cap: float = 50_000_000_000,
     top_n: int = 15,
 ) -> dict:
     """Post-Earnings Announcement Drift: stocks 5-30 days past an earnings beat
     with gap-up confirmation, drift still intact. Strongest academic prior in
-    the suite (Bernard & Thomas 1989). Default min_market_cap = $2B because the
-    backtest showed edge concentrates in mid+ caps. Set to 0 to scan all sizes.
+    the suite (Bernard & Thomas 1989).
+
+    Default min_market_cap = $50B because tonight's tiered backtest showed the
+    edge step-functions with size:
+      Full universe: 52.7% win / +1.02% avg / PF 1.23 (essentially flat)
+      $50B+ subset:  56.3% win / +2.47% avg / PF 1.74 (real edge, 314 names)
+
+    Set min_market_cap=2_000_000_000 to capture a broader mid-cap pool, or 0 to
+    disable the filter entirely (research mode).
     """
     from rh_mcp.analysis import pead
     try:
