@@ -83,17 +83,28 @@ def order_book_scan(ticker: str, price: float, range_dollars: float | None = Non
         range_dollars: Half-range in dollars (default auto: $2 if price<$20, $5 normal, $10 if >$100).
         threshold: Min share count to flag a wall (default 500-1000 depending on book depth).
     """
-    args = [ticker.upper(), f"{price:.4f}"]
-    if range_dollars is not None:
-        args += ["--range", str(int(range_dollars))]
-    if threshold is not None:
-        args += ["--threshold", str(int(threshold))]
-    return _run_script("order_book.py", args, timeout=45)
+    try:
+        from rh_mcp.analysis import order_book as _ob
+    except ImportError as e:
+        return {"success": False, "error": f"in-process order_book unavailable: {e}"}
+    try:
+        data = _ob.analyze(ticker.upper(), float(price), range_dollars, threshold)
+    except Exception as e:
+        return {"success": False, "error": f"order_book failed: {e}"}
+    return {"success": True, "data": data}
 
 
 def historicals(ticker: str) -> dict:
     """Daily-bar breakout grading: volume ratio, body %, 20d SMA, ATR, MM target, suggested stop, R:R."""
-    return _run_script("historicals.py", [ticker.upper()], timeout=60)
+    try:
+        from rh_mcp.analysis import historicals as _hist
+    except ImportError as e:
+        return {"success": False, "error": f"in-process historicals unavailable: {e}"}
+    try:
+        data = _hist.analyze(ticker.upper())
+    except Exception as e:
+        return {"success": False, "error": f"historicals failed: {e}"}
+    return {"success": True, "data": data}
 
 
 def float_check(ticker: str) -> dict:
@@ -111,12 +122,28 @@ def float_check(ticker: str) -> dict:
 
 def iv_rank(ticker: str) -> dict:
     """Implied volatility rank — gauges whether options are expensive or cheap."""
-    return _run_script("iv_rank.py", [ticker.upper()], timeout=60)
+    try:
+        from rh_mcp.analysis import iv_rank as _iv
+    except ImportError as e:
+        return {"success": False, "error": f"in-process iv_rank unavailable: {e}"}
+    try:
+        data = _iv.analyze(ticker.upper())
+    except Exception as e:
+        return {"success": False, "error": f"iv_rank failed: {e}"}
+    return {"success": True, "data": data}
 
 
-def options_scan(ticker: str) -> dict:
+def options_scan(ticker: str) -> dict:  # noqa: D401
     """Options chain scan: ATM IV, max pain, OI walls, spread setup ideas."""
-    return _run_script("options_scan.py", [ticker.upper()], timeout=90)
+    try:
+        from rh_mcp.analysis import options_scan as _opts
+    except ImportError as e:
+        return {"success": False, "error": f"in-process options_scan unavailable: {e}"}
+    try:
+        data = _opts.analyze(ticker.upper())
+    except Exception as e:
+        return {"success": False, "error": f"options_scan failed: {e}"}
+    return {"success": True, "data": data}
 
 
 def spike_check(ticker: str, spike_price: float, ts: str) -> dict:
@@ -127,4 +154,12 @@ def spike_check(ticker: str, spike_price: float, ts: str) -> dict:
         spike_price: Price level when the spike was detected.
         ts: ISO timestamp 'YYYY-MM-DDTHH:MM:SS' of the spike event.
     """
-    return _run_script("spike_check.py", [ticker.upper(), f"{spike_price:.4f}", ts], timeout=30)
+    try:
+        from rh_mcp.analysis import spike_check as _spike
+    except ImportError as e:
+        return {"success": False, "error": f"in-process spike_check unavailable: {e}"}
+    try:
+        data = _spike.analyze(ticker.upper(), spike_price, ts)
+    except Exception as e:
+        return {"success": False, "error": f"spike_check failed: {e}"}
+    return {"success": True, "data": data}
