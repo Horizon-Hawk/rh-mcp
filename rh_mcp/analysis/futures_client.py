@@ -348,9 +348,33 @@ def place_order(
     }
 
 
-def cancel_order(order_id: str) -> dict:
-    """Cancel an open futures order. Endpoint still being mapped — placeholder."""
-    raise NotImplementedError("Cancel endpoint not yet captured from web app.")
+def cancel_order(order_id: str, account_id: str | None = None) -> dict:
+    """Cancel a pending (unfilled) futures order.
+
+    POST /ceres/v1/orders/{order_id}/cancel with body {"accountId": "..."}.
+    Use for resting orders that haven't filled yet. For closing FILLED positions,
+    use flatten_position() instead.
+    """
+    if account_id is None:
+        account_id = get_default_account_id()
+    if not account_id:
+        raise RuntimeError("No futures account ID available.")
+    headers = {
+        "content-type": "application/json",
+        "rh-contract-protected": "true",
+        "x-robinhood-client-platform": "black-widow",
+    }
+    url = f"{CERES_BASE}/orders/{order_id}/cancel"
+    r = rhh.SESSION.post(url, json={"accountId": account_id}, headers=headers, timeout=15)
+    try:
+        payload = r.json()
+    except Exception:
+        payload = {"raw_text": r.text}
+    return {
+        "http_status": r.status_code,
+        "order_id": order_id,
+        "response": payload,
+    }
 
 
 def flatten_position(contract_uuid: str, account_id: str | None = None) -> dict:

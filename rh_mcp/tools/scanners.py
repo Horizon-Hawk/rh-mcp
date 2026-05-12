@@ -192,6 +192,17 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def cancel_futures_order(order_id: str, account_id: str | None = None) -> dict:
+    """Cancel a pending (unfilled) futures order by ID. Uses default account if None.
+    For closing FILLED positions, use flatten_futures_position() instead.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        return fc.cancel_order(order_id=order_id, account_id=account_id)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
     """Emergency close a futures position via market order. RH auto-determines
     side (sell longs / cover shorts) and quantity from current position. Fires

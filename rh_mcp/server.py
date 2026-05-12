@@ -395,6 +395,14 @@ def get_futures_aggregated_positions(account_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+def cancel_futures_order(order_id: str, account_id: str | None = None) -> dict:
+    """Cancel a pending unfilled futures order by ID. For closing FILLED
+    positions use flatten_futures_position instead.
+    """
+    return scanners.cancel_futures_order(order_id=order_id, account_id=account_id)
+
+
+@mcp.tool()
 def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
     """EMERGENCY CLOSE a futures position via market order. RH auto-determines
     side and quantity from current position. Fills at whatever price the book offers.
