@@ -1,6 +1,54 @@
-"""Market scanners — top movers, news, earnings."""
+"""Market scanners — top movers, news, earnings, 52w breakouts."""
 
 from rh_mcp.lib.rh_client import client
+
+
+def scan_52w_breakouts(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    proximity_pct: float = 0.0,
+    min_price: float = 5.0,
+    min_volume_ratio: float = 1.5,
+    max_gain_today_pct: float = 5.0,
+    require_spy_uptrend: bool = True,
+    skip_earnings_within_days: int = 5,
+    top_n: int = 20,
+) -> dict:
+    """Scan a ticker universe for stocks at-or-near 52-week highs with
+    confirming volume, filtered by the momentum-breakout framework rules.
+
+    Args:
+        tickers: Explicit list of symbols. If omitted, reads `universe_file`.
+        universe_file: Path to a whitespace-delimited ticker file
+            (`# comments` stripped). Defaults to `stock_universe.txt` in cwd.
+        proximity_pct: 0 = strict at-or-above 52w high; 0.5 = "within 0.5% of".
+        min_price: Skip names below this price (framework rule, default $5).
+        min_volume_ratio: Required pace-adjusted volume vs 20d avg (default 1.5x).
+        max_gain_today_pct: If today's % move already exceeds this, downgrade
+            grade to B (chased). Set to 100 to disable.
+        require_spy_uptrend: Gate the scan off if SPY below 20d SMA.
+        skip_earnings_within_days: Drop candidates with earnings inside this
+            window (framework hard rule, default 5).
+        top_n: Trim output to top N candidates by volume_ratio.
+
+    Returns dict with `candidates` list ranked by volume_ratio descending.
+    Each candidate carries everything an entry pipeline needs to grade.
+    """
+    from rh_mcp.analysis import high_breakout
+    try:
+        return high_breakout.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            proximity_pct=proximity_pct,
+            min_price=min_price,
+            min_volume_ratio=min_volume_ratio,
+            max_gain_today_pct=max_gain_today_pct,
+            require_spy_uptrend=require_spy_uptrend,
+            skip_earnings_within_days=skip_earnings_within_days,
+            top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_52w_breakouts failed: {e}"}
 
 
 def _to_float(v):

@@ -249,6 +249,38 @@ def get_fundamentals(ticker: str) -> dict:
     return scanners.get_fundamentals(ticker)
 
 
+@mcp.tool()
+def scan_52w_breakouts(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    proximity_pct: float = 0.0,
+    min_price: float = 5.0,
+    min_volume_ratio: float = 1.5,
+    max_gain_today_pct: float = 5.0,
+    require_spy_uptrend: bool = True,
+    skip_earnings_within_days: int = 5,
+    top_n: int = 20,
+) -> dict:
+    """Scan a universe for stocks at-or-near 52-week highs with confirming volume.
+
+    Filters by the momentum-breakout framework (SPY uptrend, no earnings within
+    5d, min $5 price, 1.5x volume). Returns ranked candidates with pct_to_52w,
+    volume_ratio, today's pct change, sector, market_cap, and an A/B grade
+    suitable for the entry pipeline.
+    """
+    return scanners.scan_52w_breakouts(
+        tickers=tickers,
+        universe_file=universe_file,
+        proximity_pct=proximity_pct,
+        min_price=min_price,
+        min_volume_ratio=min_volume_ratio,
+        max_gain_today_pct=max_gain_today_pct,
+        require_spy_uptrend=require_spy_uptrend,
+        skip_earnings_within_days=skip_earnings_within_days,
+        top_n=top_n,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Local alert management (price_alerts.json)
 # ---------------------------------------------------------------------------
