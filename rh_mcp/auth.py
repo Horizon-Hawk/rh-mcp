@@ -9,6 +9,7 @@ code). With it set, the server logs in without prompting for a code.
 
 import json
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -17,6 +18,21 @@ except ImportError as e:
     raise SystemExit(
         "robin-stocks not installed. Run: pip install robin-stocks"
     ) from e
+
+# CRITICAL: redirect robin_stocks output to stderr at import time.
+# Several robin_stocks code paths (notably options.find_options_by_expiration)
+# write a "Loading Market Data |/-\" spinner directly to sys.stdout. When this
+# package runs as an MCP stdio server, sys.stdout is the JSON-RPC protocol
+# channel — any non-protocol bytes there corrupt the stream and the MCP client
+# disconnects mid-call ("Connection closed" error). Pointing robin_stocks at
+# stderr instead keeps useful diagnostics visible to the wrapper's stderr log
+# while protecting the stdio transport from corruption.
+try:
+    rh.helper.set_output(sys.stderr)
+except Exception:
+    # Older / newer robin_stocks versions may rename set_output — never let
+    # this failure stop the package from importing.
+    pass
 
 try:
     import pyotp
