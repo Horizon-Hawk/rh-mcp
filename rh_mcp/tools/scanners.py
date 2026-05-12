@@ -3,6 +3,43 @@
 from rh_mcp.lib.rh_client import client
 
 
+def scan_all(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    top_n_per_scanner: int = 25,
+    top_n_overall: int = 30,
+    proximity_pct: float = 2.0,
+    require_spy_uptrend: bool = True,
+    compression_percentile: float = 20.0,
+    proximity_upper_pct: float = 2.0,
+    leader_move_pct: float = 5.0,
+    max_laggard_move_pct: float = 2.0,
+) -> dict:
+    """Composite morning-brief scanner: runs 52w-high, Bollinger squeeze, and
+    sympathy-laggard scanners in parallel and reconciles overlaps.
+
+    Multi-signal tickers (showing in 2-3 scanners) are highest conviction and
+    appear first in the candidates list. APLS-style stacks (deep compression +
+    near 52w high) are the highest-quality setups this composite finds.
+    """
+    from rh_mcp.analysis import scan_all as _scan_all
+    try:
+        return _scan_all.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            top_n_per_scanner=top_n_per_scanner,
+            top_n_overall=top_n_overall,
+            proximity_pct=proximity_pct,
+            require_spy_uptrend=require_spy_uptrend,
+            compression_percentile=compression_percentile,
+            proximity_upper_pct=proximity_upper_pct,
+            leader_move_pct=leader_move_pct,
+            max_laggard_move_pct=max_laggard_move_pct,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_all failed: {e}"}
+
+
 def scan_squeeze_breakouts(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
