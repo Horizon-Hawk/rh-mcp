@@ -402,6 +402,146 @@ def list_accounts() -> dict:
     return {"success": True, "accounts": accounts}
 
 
+def get_settled_cash(account_number: str | None = None) -> dict:
+    """Return settled cash vs unsettled funds vs total BP for an account.
+
+    Critical for cash accounts (incl. IRAs) where unsettled funds can be used
+    to BUY but the resulting shares are LOCKED from selling until T+1.
+
+    Returns:
+      settled_cash:         actually deployable cash, no settlement violation risk
+      unsettled_funds:      pending from recent sales (T+1)
+      unsettled_debit:      pending from recent buys still settling
+      cash_held_for_orders: locked by working limit orders
+      buying_power:         total available (may include unsettled — misleading on IRA)
+      account_type:         brokerage_account_type (e.g., individual, ira_roth)
+    """
+    rh = client()
+    acct = account_number or default_account()
+
+    try:
+        accounts = rh.helper.request_get(
+            "https://api.robinhood.com/accounts/", "pagination"
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"accounts fetch failed: {e}"}
+
+    profile = None
+    for a in accounts:
+        if a.get("account_number") == acct:
+            profile = a
+            break
+    if not profile:
+        profile = rh.load_account_profile()
+    if not profile:
+        return {"success": False, "error": "no matching account profile"}
+
+    margin = profile.get("margin_balances") or {}
+    return {
+        "success": True,
+        "account_number": acct,
+        "settled_cash": _to_float(margin.get("cash_available_for_withdrawal")),
+        "unsettled_funds": _to_float(margin.get("unsettled_funds")),
+        "unsettled_debit": _to_float(margin.get("unsettled_debit")),
+        "cash_held_for_orders": _to_float(margin.get("cash_held_for_orders")),
+        "buying_power": _to_float(profile.get("buying_power")),
+        "account_type": profile.get("brokerage_account_type") or profile.get("type"),
+    }
+
+
+def effective_basis(ticker: str, account_number: str | None = None) -> dict:
+    """Compute effective cost basis adjusted for currently open option positions.
+
+    Pulls the stock position and any currently OPEN short option positions on
+    the ticker (covered calls, CSPs). Adjusts the stock cost basis by the
+    *open* short premium received.
+
+    NOTE: This does NOT pull closed historical option premium (expired,
+    bought-back). For full historical accounting, manual records are required.
+    The displayed RH avg_cost is always the literal stock buy price — it does
+    NOT adjust for option activity.
+
+    Returns:
+      original_basis:    literal stock avg_cost from RH
+      shares:            position quantity
+      open_short_premium: net premium currently held from open short options
+      effective_basis:   original_basis - (open_short_premium / shares)
+      open_options:      detail of contributing option positions
+    """
+    rh = client()
+    acct = account_number or default_account()
+    sym = ticker.strip().upper()
+
+    # Get stock position via account-scoped /positions/
+    try:
+        raw_positions = rh.helper.request_get(
+            f"https://api.robinhood.com/positions/?account_number={acct}&nonzero=true",
+            "pagination",
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"positions fetch failed: {e}"}
+
+    shares = 0.0
+    original_basis = None
+    for p in raw_positions:
+        try:
+            psym = rh.stocks.get_symbol_by_url(p.get("instrument")) if p.get("instrument") else None
+        except Exception:
+            psym = None
+        if psym == sym:
+            shares = float(p.get("quantity") or 0)
+            original_basis = _to_float(p.get("average_buy_price"))
+            break
+
+    if shares == 0 or original_basis is None:
+        return {"success": False, "error": f"no stock position in {sym}"}
+
+    # Get open option positions on this ticker
+    try:
+        opt_positions = rh.options.get_open_option_positions(account_number=acct) or []
+    except Exception as e:
+        return {"success": False, "error": f"option positions fetch failed: {e}"}
+
+    open_short_premium = 0.0
+    open_options = []
+    for op in opt_positions:
+        op_ticker = (op.get("chain_symbol") or "").upper()
+        if op_ticker != sym:
+            continue
+        op_type = op.get("type")  # 'long' or 'short'
+        if op_type != "short":
+            continue
+        qty = float(op.get("quantity") or 0)
+        avg_price = _to_float(op.get("average_price"))
+        if not qty or avg_price is None:
+            continue
+        # average_price is per-share; per-contract = avg_price * 100
+        # For shorts, this is credit collected (positive for the account)
+        # Note: RH stores avg_price as negative for shorts in some versions; normalize
+        premium = abs(avg_price) * qty * 100
+        open_short_premium += premium
+        open_options.append({
+            "option_id": op.get("option_id") or op.get("option"),
+            "quantity": qty,
+            "avg_price": abs(avg_price),
+            "premium_collected": premium,
+        })
+
+    effective = original_basis - (open_short_premium / shares) if shares else original_basis
+
+    return {
+        "success": True,
+        "symbol": sym,
+        "account_number": acct,
+        "shares": shares,
+        "original_basis": original_basis,
+        "open_short_premium": round(open_short_premium, 2),
+        "effective_basis": round(effective, 4),
+        "open_options": open_options,
+        "note": "Effective basis here only reflects CURRENTLY OPEN short option positions. Closed/expired historical premium is not included.",
+    }
+
+
 def get_portfolio_history(
     span: str = "year",
     interval: str = "day",

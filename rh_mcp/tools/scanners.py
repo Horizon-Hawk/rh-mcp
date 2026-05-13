@@ -1231,3 +1231,129 @@ def get_fundamentals(ticker: str) -> dict:
         "industry": f.get("industry"),
         "description": f.get("description"),
     }
+
+
+def scan_stack(
+    cap_range: str = "stack",
+    lookback_minutes: int = 1440,
+    buyback_days: int = 14,
+    pead_min_market_cap: float = 50_000_000_000,
+    top_n_per_strategy: int = 10,
+) -> dict:
+    """Run the 4 validated edge scanners SEQUENTIALLY and aggregate.
+
+    Scanners (must be sequential — parallel calls hang):
+      1. scan_bullish_8k     (cap_range=stack by default)
+      2. scan_buyback_announcements
+      3. scan_pead           (mega-cap drift)
+      4. scan_pead_negative  (top EV)
+
+    Returns per-strategy results + a flat all_candidates list tagged with
+    `strategy` so downstream callers can rank across edges.
+    """
+    out = {"success": True, "strategies": {}, "all_candidates": []}
+
+    r1 = scan_bullish_8k(cap_range=cap_range, lookback_minutes=lookback_minutes, top_n=top_n_per_strategy)
+    out["strategies"]["bullish_8k"] = r1
+    if r1.get("success"):
+        for c in r1.get("candidates", []) or []:
+            out["all_candidates"].append({**c, "strategy": "bullish_8k"})
+
+    r2 = scan_buyback_announcements(max_days_since_announcement=buyback_days, top_n=top_n_per_strategy)
+    out["strategies"]["buyback_announcements"] = r2
+    if r2.get("success"):
+        for c in r2.get("candidates", []) or []:
+            out["all_candidates"].append({**c, "strategy": "buyback"})
+
+    r3 = scan_pead(min_market_cap=pead_min_market_cap, top_n=top_n_per_strategy)
+    out["strategies"]["pead"] = r3
+    if r3.get("success"):
+        for c in r3.get("candidates", []) or []:
+            out["all_candidates"].append({**c, "strategy": "pead"})
+
+    r4 = scan_pead_negative(top_n=top_n_per_strategy)
+    out["strategies"]["pead_negative"] = r4
+    if r4.get("success"):
+        for c in r4.get("candidates", []) or []:
+            out["all_candidates"].append({**c, "strategy": "pead_negative"})
+
+    out["total_candidates"] = len(out["all_candidates"])
+    return out
+
+
+def get_portfolio_earnings(
+    account_number: str | None = None,
+    warn_within_days: int = 14,
+) -> dict:
+    """Earnings dates for all current stock positions in one call.
+
+    Pulls positions scoped to account_number, then calls get_earnings per
+    ticker. Flags any earnings within `warn_within_days` so morning-brief
+    workflows can highlight positions that may face binary risk soon.
+
+    Returns:
+      positions: list of {ticker, next_date, days_away, timing, signal}
+      warnings:  subset of positions with earnings within the threshold
+    """
+    from datetime import datetime
+    from rh_mcp.auth import default_account
+
+    rh = client()
+    acct = account_number or default_account()
+
+    try:
+        raw = rh.helper.request_get(
+            f"https://api.robinhood.com/positions/?account_number={acct}&nonzero=true",
+            "pagination",
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"positions fetch failed: {e}"}
+
+    today = datetime.now().date()
+    rows = []
+    warnings = []
+    for p in raw:
+        qty = _to_float(p.get("quantity"))
+        if not qty or qty == 0:
+            continue
+        try:
+            sym = rh.stocks.get_symbol_by_url(p.get("instrument")) if p.get("instrument") else None
+        except Exception:
+            sym = None
+        if not sym:
+            continue
+
+        e_result = get_earnings(sym)
+        upcoming = (e_result or {}).get("upcoming")
+        rec = {"ticker": sym, "quantity": qty}
+        if upcoming and upcoming.get("report_date"):
+            try:
+                rep_date = datetime.fromisoformat(upcoming["report_date"]).date()
+                days_away = (rep_date - today).days
+            except Exception:
+                rep_date = None
+                days_away = None
+            rec.update({
+                "next_date": upcoming.get("report_date"),
+                "days_away": days_away,
+                "timing": upcoming.get("report_timing"),
+                "eps_estimate": upcoming.get("eps_estimate"),
+                "signal": (
+                    "WARN" if days_away is not None and 0 <= days_away <= warn_within_days
+                    else "CLEAR"
+                ),
+            })
+            if rec["signal"] == "WARN":
+                warnings.append(rec)
+        else:
+            rec.update({"next_date": None, "days_away": None, "signal": "NO_DATA"})
+        rows.append(rec)
+
+    return {
+        "success": True,
+        "account_number": acct,
+        "warn_within_days": warn_within_days,
+        "positions": rows,
+        "warnings": warnings,
+        "warning_count": len(warnings),
+    }

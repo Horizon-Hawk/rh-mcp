@@ -163,6 +163,85 @@ def close_position(
     }
 
 
+def close_all(
+    ticker: str,
+    account_number: str | None = None,
+) -> dict:
+    """Close the FULL position on a ticker, including any fractional residual.
+
+    RH rejects fractional shares on limit orders, so this splits the close
+    into two orders:
+      1. Whole shares  -> limit sell at the current bid
+      2. Fractional    -> market sell
+
+    Returns both order IDs in one response. Either side is skipped if zero.
+    """
+    rh = client()
+    acct = account_number or default_account()
+    sym = ticker.strip().upper()
+
+    try:
+        raw_positions = rh.helper.request_get(
+            f"https://api.robinhood.com/positions/?account_number={acct}&nonzero=true",
+            "pagination",
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"positions fetch failed: {e}"}
+
+    held_qty = 0.0
+    for p in raw_positions:
+        instrument_url = p.get("instrument")
+        try:
+            psym = rh.stocks.get_symbol_by_url(instrument_url) if instrument_url else None
+        except Exception:
+            psym = None
+        if psym == sym:
+            held_qty = float(p.get("quantity") or 0)
+            break
+
+    if held_qty == 0:
+        return {"success": False, "error": f"no open position in {sym}"}
+
+    whole_qty = int(held_qty)
+    fractional_qty = round(held_qty - whole_qty, 8)
+
+    quotes = rh.stocks.get_quotes([sym])
+    if not quotes or not quotes[0]:
+        return {"success": False, "error": "no quote available for pricing"}
+    bid = _to_float(quotes[0].get("bid_price")) or _to_float(quotes[0].get("last_trade_price"))
+    if bid is None:
+        return {"success": False, "error": "no bid available"}
+
+    result = {
+        "success": True,
+        "symbol": sym,
+        "total_quantity": held_qty,
+        "whole_quantity": whole_qty,
+        "fractional_quantity": fractional_qty,
+    }
+
+    if whole_qty > 0:
+        whole = rh.order_sell_limit(
+            symbol=sym, quantity=whole_qty, limitPrice=round(bid, 2),
+            account_number=acct, timeInForce="gfd",
+        )
+        if not whole or "id" not in whole:
+            return {"success": False, "stage": "whole_shares", "error": "whole-share sell failed", "raw": whole, **result}
+        result["whole_share_order_id"] = whole["id"]
+        result["whole_share_limit_price"] = round(bid, 2)
+
+    if fractional_qty > 0.0001:
+        frac = rh.order_sell_market(
+            symbol=sym, quantity=fractional_qty,
+            account_number=acct, timeInForce="gfd",
+        )
+        if not frac or "id" not in frac:
+            return {"success": False, "stage": "fractional", "error": "fractional sell failed", "raw": frac, **result}
+        result["fractional_order_id"] = frac["id"]
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Native trailing stop — the big win over Trayd
 # ---------------------------------------------------------------------------
@@ -828,3 +907,71 @@ def get_order_status(order_id: str) -> dict:
     if opt_info:
         return _option_order_summary(opt_info)
     return {"success": False, "error": "order not found as stock or option"}
+
+def get_orders_status_batch(order_ids: list[str]) -> dict:
+    """Get status for multiple orders in one call (any mix of stock/option IDs).
+
+    Returns dict keyed by order_id with each value being the same shape as
+    get_order_status. Failed lookups return {"success": False, "error": ...}
+    for that ID — the overall call succeeds.
+    """
+    results = {}
+    for oid in order_ids or []:
+        try:
+            results[oid] = get_order_status(oid)
+        except Exception as e:
+            results[oid] = {"success": False, "error": str(e)}
+    return {
+        "success": True,
+        "count": len(results),
+        "orders": results,
+    }
+
+
+def stage_stop_safe(
+    ticker: str,
+    quantity: float,
+    stop_price: float,
+    time_in_force: str = "gtc",
+    account_number: str | None = None,
+) -> dict:
+    """Place a stop-loss with graceful handling of settlement-lockup rejections.
+
+    Tries set_stop_loss. If the broker rejects with PDT/settlement language
+    (typical when the underlying shares were bought with unsettled funds
+    earlier the same day), returns a structured "deferred" result so the
+    caller can retry after T+1 settlement clears, instead of treating the
+    rejection as a hard error.
+
+    Returns one of:
+      success=True  → stop placed (order_id included)
+      success=False, deferred=True → settlement lockup; retry next session
+      success=False, deferred=False → real failure
+    """
+    result = set_stop_loss(ticker, quantity, stop_price, time_in_force, account_number)
+    if result.get("success"):
+        return result
+
+    raw = result.get("raw") or {}
+    detail = ""
+    if isinstance(raw, dict):
+        detail = str(raw.get("detail", ""))
+    is_settlement_block = (
+        "PDT" in detail
+        or "Pattern Day" in detail
+        or "good faith" in detail.lower()
+        or "settlement" in detail.lower()
+    )
+
+    if is_settlement_block:
+        return {
+            "success": False,
+            "deferred": True,
+            "reason": "settlement_lockup",
+            "detail": detail or "broker rejected — likely settlement lockup",
+            "ticker": ticker.upper(),
+            "quantity": quantity,
+            "stop_price": stop_price,
+            "retry_when": "next trading session after T+1 settlement",
+        }
+    return {**result, "deferred": False}

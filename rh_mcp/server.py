@@ -73,6 +73,18 @@ def get_account_status(account_number: str | None = None) -> dict:
 
 
 @mcp.tool()
+def get_settled_cash(account_number: str | None = None) -> dict:
+    """Settled cash vs unsettled funds vs buying power for an account. Critical for cash accounts/IRAs — unsettled funds can buy but new shares are locked until T+1."""
+    return account.get_settled_cash(account_number)
+
+
+@mcp.tool()
+def effective_basis(ticker: str, account_number: str | None = None) -> dict:
+    """Effective cost basis adjusted for currently open option positions (covered calls, CSPs). RH's avg_cost is always the literal buy price — this computes what you'd actually break even on."""
+    return account.effective_basis(ticker, account_number)
+
+
+@mcp.tool()
 def get_portfolio_history(span: str = "year", interval: str = "day", bounds: str = "regular", account_number: str | None = None) -> dict:
     """Historical portfolio equity curve. span='day|week|month|3month|year|5year|all', interval='5minute|10minute|hour|day|week'."""
     return account.get_portfolio_history(span, interval, bounds, account_number)
@@ -126,6 +138,12 @@ def place_short(ticker: str, quantity: float, limit_price: float, account_number
 def close_position(ticker: str, quantity: float | None = None, limit_price: float | None = None, account_number: str | None = None) -> dict:
     """Close a long position. Omit quantity to close all. Omit limit_price for aggressive bid - $0.05."""
     return orders.close_position(ticker, quantity, limit_price, account_number)
+
+
+@mcp.tool()
+def close_all(ticker: str, account_number: str | None = None) -> dict:
+    """Close the FULL position including any fractional residual. Splits into whole-share limit + fractional market orders. Returns both order IDs."""
+    return orders.close_all(ticker, account_number)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +231,18 @@ def get_order_status(order_id: str) -> dict:
 
 
 @mcp.tool()
+def get_orders_status_batch(order_ids: list[str]) -> dict:
+    """Status for multiple orders (stock or option) in one call. Returns dict keyed by order_id."""
+    return orders.get_orders_status_batch(order_ids)
+
+
+@mcp.tool()
+def stage_stop_safe(ticker: str, quantity: float, stop_price: float, time_in_force: str = "gtc", account_number: str | None = None) -> dict:
+    """Place a stop-loss with graceful handling of settlement-lockup rejections (PDT/good-faith). Returns deferred=True if blocked by settlement, deferred=False on real errors."""
+    return orders.stage_stop_safe(ticker, quantity, stop_price, time_in_force, account_number)
+
+
+@mcp.tool()
 def get_option_order_status(order_id: str) -> dict:
     """Status of a specific OPTION order including all legs and per-leg
     fills. Explicit alternative to get_order_status's auto-dispatch.
@@ -278,6 +308,12 @@ def get_news(ticker: str, count: int = 10) -> dict:
 def get_earnings(ticker: str) -> dict:
     """Earnings history + next earnings date."""
     return scanners.get_earnings(ticker)
+
+
+@mcp.tool()
+def get_portfolio_earnings(account_number: str | None = None, warn_within_days: int = 14) -> dict:
+    """Earnings dates for all current stock positions in one call. Flags any earnings within warn_within_days for morning-brief highlighting."""
+    return scanners.get_portfolio_earnings(account_number, warn_within_days)
 
 
 @mcp.tool()
@@ -501,6 +537,24 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
     Cached to ~/.rh_futures_uuids.json so future sessions inherit the mappings.
     """
     return scanners.register_futures_uuid(ticker, uuid)
+
+
+@mcp.tool()
+def scan_stack(
+    cap_range: str = "stack",
+    lookback_minutes: int = 1440,
+    buyback_days: int = 14,
+    pead_min_market_cap: float = 50_000_000_000,
+    top_n_per_strategy: int = 10,
+) -> dict:
+    """Run the 4 validated edge scanners (bullish_8k, buyback, pead, pead_negative) SEQUENTIALLY and aggregate candidates with strategy tags. Must be sequential — parallel scanner calls hang."""
+    return scanners.scan_stack(
+        cap_range=cap_range,
+        lookback_minutes=lookback_minutes,
+        buyback_days=buyback_days,
+        pead_min_market_cap=pead_min_market_cap,
+        top_n_per_strategy=top_n_per_strategy,
+    )
 
 
 @mcp.tool()
