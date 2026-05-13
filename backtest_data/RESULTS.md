@@ -15,7 +15,9 @@ position, 6% daily loss limit, 5 concurrent max)
 
 | Strategy | Side | Hold | 4-yr Return | Annualized | Max DD | Status |
 |---|---|---|---:|---:|---:|---|
-| **`bullish_8k`** (no float/quality filter) | long | 5d | **+143.94%** | **~25%** | **22.7%** | ✓ VALIDATED — only stress-test survivor |
+| **`bullish_8k`** (no float/quality filter) | long | 5d | **+143.94%** | **~25%** | **22.7%** | ✓ VALIDATED — small-cap, all regimes |
+| **`buyback` (buyback_authorized + dividend_increase)** | long | 5d | **+42.29%** | **~9%** | **18.2%** | ✓ VALIDATED — independent signal pool |
+| **PEAD negative-earnings bounce** (item 2.02, t+1 neg, hold 4d) | long | 4d drift | **+141.66%** | **~24%** | **29.4%** | ✓ VALIDATED — 4 of 5 years positive incl. 2022 (+33%) |
 | bullish_8k + low_float | long | 5d | +44.76% | ~10% | 18.3% | INVALIDATED — filter destroys edge |
 | bullish_8k + low_float + quality (strict) | long | 5d | +11.91% | ~3% | 4.3% | INVALIDATED — over-filters |
 | bullish_8k + low_float + loose_quality | long | 5d | +19.80% | ~5% | 8.8% | INVALIDATED — still cuts signal |
@@ -49,6 +51,35 @@ was 1500 days (May 2026 lookback). Momentum strategies cover full window.
 
 `bullish_8k` was POSITIVE in 4 of 5 years and stayed flat in the worst
 year (2025: -0.92%). The only strategy that survives across all regimes.
+
+### Buyback / dividend_increase (independent signal — body keyword filter)
+
+| Year | N | Win% | Sim Return | DD% |
+|---|---:|---:|---:|---:|
+| 2022 (bear) | 56 | 42.9 | +5.29% | 3.5 |
+| 2023 (sideways) | 83 | 63.9 | **+21.92%** | 1.1 |
+| 2024 (bull) | 88 | 56.8 | +17.24% | 9.4 |
+| 2025 (bull) | 113 | 49.6 | -11.73% | 17.8 |
+| 2026 (partial) | 70 | 45.9 | +7.79% | 5.0 |
+| **4yr cumulative** | **323** (5d) | — | **+43.19%** | 18.6 |
+
+Profitable in 4 of 5 years incl. 2022 bear (+5.29%, only 3.5% DD).
+Re-run via `python _run_buyback_pead_stress.py`.
+
+### PEAD negative-earnings bounce (item 2.02 + t+1 negative reaction)
+
+| Year | N | Win% | Avg/trade | Sim Return | DD% |
+|---|---:|---:|---:|---:|---:|
+| 2022 (bear) | 64 | 57.8 | **+3.09%** | **+33.43%** | 1.9 |
+| 2023 (sideways) | 96 | 55.2 | +2.76% | +47.79% | 2.2 |
+| 2024 (bull) | 134 | 44.8 | +0.91% | +19.87% | 10.2 |
+| 2025 (bull) | 188 | 50.5 | -0.23% | -17.27% | 21.9 |
+| 2026 (partial) | 76 | 47.4 | +1.49% | +23.57% | 3.8 |
+| **4yr cumulative** | **558** | **50.4** | **+1.18%** | **+141.66%** | 29.4% |
+
+The strongest regime-stable PEAD edge. Counter-intuitive: buying *after* a
+negative earnings reaction outperforms buying after a strong beat. Edge is
+the partial bounce that follows oversold post-earnings flushes.
 
 ### Momentum strategies (full 6-year window)
 
