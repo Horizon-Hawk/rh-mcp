@@ -151,7 +151,45 @@ per dollar. Plus the concurrent-position limit already binds hard in
 the equity sim — pyramiding into winners consumes slots that new
 signals can't take.
 
-**5. The ONE effective loser-killer is the -5% t+1 stop.**
+**5. ATR plays a marginal role — not actionable as a filter or stop rule.**
+
+Computed 20-day ATR at each filing date (524/535 rows had usable ATR).
+Two effects measured:
+
+a) ATR bucket analysis (per-trade quality):
+
+| ATR bucket | N | Win% | AvgT5% | Sim Ret | DD |
+|---|---:|---:|---:|---:|---:|
+| 0-2% (low vol) | 17 | 52.9 | +0.83% | +1.51% | 1.7% |
+| 2-4% | 219 | 55.3 | +0.71% | +26.25% | 9.2% |
+| **4-6% (sweet spot)** | **188** | **59.0** | **+2.49%** | **+95.77%** | 10.0% |
+| 6-10% | 89 | 55.1 | +2.05% | +30.17% | 15.1% |
+| 10%+ (high vol) | 11 | 36.4 | +0.80% | +3.50% | 1.8% |
+
+The 4-6% sweet spot has best per-trade quality. But filtering to it
+cuts trade count from 438 to 186 — total return drops from +169% to
++96%. Wrong trade-off for a compounding target.
+
+Filtering to ATR 2-10% (skip both extremes) is essentially a no-op
+(+168.92% vs +169.18% baseline). Extremes contribute almost nothing.
+
+b) ATR-based stop (replace fixed -5% with N × ATR):
+
+| Stop rule | Trades | Return | DD |
+|---|---:|---:|---:|
+| **Fixed -5% t+1 stop** | **438** | **+169.18%** | 21.75% |
+| 1.0x ATR stop | 424 | +153.80% | 21.65% |
+| 1.5x ATR stop | 424 | +157.53% | 21.22% |
+| 2.0x ATR stop | 424 | +150.63% | 24.29% |
+| 3.0x ATR stop | 424 | +154.63% | 24.23% |
+
+Fixed -5% beats every ATR multiplier. Volatility-scaled stops are
+WIDER on high-vol names (let losers run) and TIGHTER on low-vol names
+(fire on noise). The static -5% threshold happens to be near-optimal
+because the "62% of losers show by t+1" pattern is universal, not
+volatility-dependent.
+
+**6. The ONE effective loser-killer is the -5% t+1 stop.**
 
 62% of t+5 losers were already down at t+1. The -5% t+1 close stop
 catches the worst of them. This is already in the validated rule and
