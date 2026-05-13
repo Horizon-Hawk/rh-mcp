@@ -96,6 +96,26 @@ pulls in additional trades that bring more losers, inflating DD.
 Run via `simulate_equity_curve(..., t1_stop_pct=-0.05)` or
 `python _run_stack_backtest.py --t1-stop-pct -0.05`.
 
+### Stock RSI(2) — invalidated by slippage (do not deploy)
+
+Tested via the `backtest` MCP tool with strategy=rsi2_long on both
+universes. Result: marginal positive PF (1.08-1.16) consumed entirely
+by realistic slippage. Don't re-test.
+
+| Universe | Trades/5y | Win% | Avg/trade gross | PF | Net after 0.4% slip |
+|---|---:|---:|---:|---:|---:|
+| Small-cap | 21,874 | 59.5 | +0.19% | 1.08 | **-0.21% (negative)** |
+| Mid-cap | 44,861 | 61.2 | +0.26% | 1.16 | **-0.14% (negative)** |
+
+Additionally: 17-36 signals per day across the universe is unmanageable
+in practice — you can't deploy 17 trades/day on a single account.
+
+The real RSI(2) edge is in **FUTURES**, not stocks. Per ROBINHOOD.md
+Phase 3.5: MNQ RSI(2) has PF 3.61 long / 2.68 short on 5y backtest,
+~17-25x stronger than the stock equivalent. This is already deployed
+in the framework as the futures layer alongside the equity stack. Use
+the `scan_futures_rsi2` MCP tool for live signals.
+
 ### Real-account margin backtest (full framework rules + slippage)
 
 Run via `python _run_margin_backtest.py`. Uses the user's actual
