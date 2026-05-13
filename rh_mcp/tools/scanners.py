@@ -315,6 +315,47 @@ _CAP_UNIVERSE_PATHS = {
 }
 
 
+def _apply_sector_filter(
+    candidates: list[dict],
+    exclude_sectors: list[str] | None,
+) -> tuple[list[dict], list[dict]]:
+    """Post-filter a candidate list by GICS sector. Returns (kept, skipped).
+
+    Each candidate must have a `ticker` field. Sector is pulled per ticker
+    from yfinance and tagged onto the candidate dict as `sector`. If the
+    sector is in `exclude_sectors`, the candidate is dropped.
+
+    Used to apply per-strategy sector exclusion defaults from the 4yr
+    backtest findings (different drag sectors per strategy).
+    """
+    if not exclude_sectors:
+        return candidates, []
+    excluded = {s for s in exclude_sectors if s}
+    if not excluded:
+        return candidates, []
+    try:
+        import yfinance as yf
+    except ImportError:
+        return candidates, []
+    kept: list[dict] = []
+    skipped: list[dict] = []
+    for c in candidates:
+        t = (c.get("ticker") or "").upper()
+        if not t:
+            kept.append(c)
+            continue
+        try:
+            sector = (yf.Ticker(t).info or {}).get("sector")
+        except Exception:
+            sector = None
+        c["sector"] = sector
+        if sector in excluded:
+            skipped.append({"ticker": t, "sector": sector})
+        else:
+            kept.append(c)
+    return kept, skipped
+
+
 def _load_universe_tickers(path: str) -> list[str]:
     from pathlib import Path
     p = Path(path)
@@ -443,9 +484,6 @@ def scan_bullish_8k(
     #   mid:   ["Consumer Cyclical", "Real Estate"] (CC -1.75%, RE -1.67%
     #          on mid-cap; Industrials is +0.51% on mid so KEEP it)
     #   stack: union of both (small + mid have zero ticker overlap)
-    # Skipping the right sectors per universe shifted returns by:
-    #   sm_bullish_8k +0.8pp ret / -2.3pp DD
-    #   mid_bullish_8k +84pp ret / -5.1pp DD
     if exclude_sectors is None:
         cr_norm = (cap_range or "small").lower()
         if cr_norm == "mid":
@@ -454,28 +492,7 @@ def scan_bullish_8k(
             exclude_sectors = ["Industrials", "Consumer Cyclical", "Real Estate"]
         else:
             exclude_sectors = ["Industrials"]
-    excluded_sectors_set = {s for s in exclude_sectors if s}
-    sector_skipped: list[dict] = []
-    if excluded_sectors_set:
-        try:
-            import yfinance as yf
-            kept: list[dict] = []
-            for c in bullish:
-                t = (c.get("ticker") or "").upper()
-                sector = None
-                try:
-                    sector = (yf.Ticker(t).info or {}).get("sector")
-                except Exception:
-                    sector = None
-                c["sector"] = sector
-                if sector in excluded_sectors_set:
-                    sector_skipped.append({"ticker": t, "sector": sector})
-                else:
-                    kept.append(c)
-            bullish = kept
-        except ImportError:
-            # yfinance unavailable — log but don't fail the scan
-            pass
+    bullish, sector_skipped = _apply_sector_filter(bullish, exclude_sectors)
 
     bullish = bullish[:top_n]
 
@@ -494,7 +511,7 @@ def scan_bullish_8k(
         "filtered_to": filt,
         "strategy": "bullish_8k (no float/quality filter)",
         "cap_range": cap_range,
-        "excluded_sectors": sorted(excluded_sectors_set),
+        "excluded_sectors": sorted(set(exclude_sectors)) if exclude_sectors else [],
         "sector_skipped": sector_skipped,
         "validated_return_4yr": ret_meta,
         "validated_max_dd": dd_meta,
@@ -728,6 +745,7 @@ def scan_pead_negative(
     min_avg_volume: int = 200_000,
     min_market_cap: float = 300_000_000,
     top_n: int = 15,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """PEAD NEGATIVE BOUNCE: buys oversold post-earnings flushes — counter-
     intuitive but TOP-EV strategy per 4yr stress test.
@@ -738,20 +756,41 @@ def scan_pead_negative(
     Filters: earnings 1-10d ago, t+1 close DOWN ≥3% from pre-earnings close,
     today's price still below pre-earnings close (bounce intact), not extended
     further past -15% (skip falling knives). Mechanical 4-day hold.
+
+    `exclude_sectors`: defaults to ["Industrials", "Energy", "Basic Materials",
+    "Real Estate", "Consumer Defensive"] per validated 4yr backtest. PEAD is
+    the most sector-sensitive strategy — 5 sectors are clear drags. Skipping
+    them lifted PEAD returns from +141.66% to +241.30% with DD from 29.4%
+    to 18.3%. Pass [] to disable; pass a custom list to override.
     """
     from rh_mcp.analysis import pead_negative
+    if exclude_sectors is None:
+        exclude_sectors = [
+            "Industrials", "Energy", "Basic Materials",
+            "Real Estate", "Consumer Defensive",
+        ]
     try:
-        return pead_negative.analyze(
+        result = pead_negative.analyze(
             tickers=tickers, universe_file=universe_file,
             min_days_since_earnings=min_days_since_earnings,
             max_days_since_earnings=max_days_since_earnings,
             min_neg_gap_pct=min_neg_gap_pct,
             max_extended_drop_pct=max_extended_drop_pct,
             min_price=min_price, min_avg_volume=min_avg_volume,
-            min_market_cap=min_market_cap, top_n=top_n,
+            min_market_cap=min_market_cap,
+            top_n=max(top_n * 2, 30),
         )
     except Exception as e:
         return {"success": False, "error": f"scan_pead_negative failed: {e}"}
+    if not result.get("success"):
+        return result
+    kept, skipped = _apply_sector_filter(result.get("candidates", []), exclude_sectors)
+    return {
+        **result,
+        "candidates": kept[:top_n],
+        "excluded_sectors": sorted(set(exclude_sectors)) if exclude_sectors else [],
+        "sector_skipped": skipped,
+    }
 
 
 def scan_momentum_12_1(
@@ -830,20 +869,40 @@ def scan_buyback_announcements(
     min_price: float = 5.0,
     min_market_cap: float = 500_000_000,
     top_n: int = 15,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """Recent buyback announcements: stocks with new repurchase authorizations
     in the last N days. Ranked by buyback size as % of market cap when known.
     Long holding period (3-6 months) — treat as swing watch list.
+
+    `exclude_sectors`: defaults to ["Industrials", "Consumer Cyclical",
+    "Healthcare"] per validated 4yr backtest. Healthcare buybacks are
+    uniquely weak on this strategy (40% win rate, +0.27% avg — likely
+    signals "weak R&D pipeline"). Skipping these three sectors lifted
+    buyback returns from +43.19% to +84.91% with DD from 18.6% to 8.4%.
+    Pass [] to disable; pass a custom list to override.
     """
     from rh_mcp.analysis import buyback_announcements
+    if exclude_sectors is None:
+        exclude_sectors = ["Industrials", "Consumer Cyclical", "Healthcare"]
     try:
-        return buyback_announcements.analyze(
+        result = buyback_announcements.analyze(
             tickers=tickers, universe_file=universe_file,
             max_days_since_announcement=max_days_since_announcement,
-            min_price=min_price, min_market_cap=min_market_cap, top_n=top_n,
+            min_price=min_price, min_market_cap=min_market_cap,
+            top_n=max(top_n * 2, 30),  # pull extras to absorb sector skips
         )
     except Exception as e:
         return {"success": False, "error": f"scan_buyback_announcements failed: {e}"}
+    if not result.get("success"):
+        return result
+    kept, skipped = _apply_sector_filter(result.get("candidates", []), exclude_sectors)
+    return {
+        **result,
+        "candidates": kept[:top_n],
+        "excluded_sectors": sorted(set(exclude_sectors)) if exclude_sectors else [],
+        "sector_skipped": skipped,
+    }
 
 
 def snapshot_oi(tickers: list[str]) -> dict:

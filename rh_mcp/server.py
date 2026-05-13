@@ -787,6 +787,7 @@ def scan_pead_negative(
     min_avg_volume: int = 200_000,
     min_market_cap: float = 300_000_000,
     top_n: int = 15,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """PEAD NEGATIVE BOUNCE — TOP EV: +141.66% / 4yr cumulative,
     50.4% win, +1.18% avg per trade (558 trades, max DD 29.4%, +33% in 2022 bear).
@@ -795,6 +796,11 @@ def scan_pead_negative(
     1-10d ago, t+1 close DOWN ≥3% from pre-earnings close, today still below
     pre-earnings close (bounce intact), not extended past -15% (skip falling
     knives). Mechanical 4-day hold per backtest spec.
+
+    `exclude_sectors`: defaults to ["Industrials","Energy","Basic Materials",
+    "Real Estate","Consumer Defensive"] — the 5 sectors flagged as drags on
+    PEAD by the 4yr backtest. Skipping these lifts return +141.66% -> +241.30%
+    and DD 29.4% -> 18.3%. Pass [] to disable.
     """
     return scanners.scan_pead_negative(
         tickers=tickers, universe_file=universe_file,
@@ -804,6 +810,7 @@ def scan_pead_negative(
         max_extended_drop_pct=max_extended_drop_pct,
         min_price=min_price, min_avg_volume=min_avg_volume,
         min_market_cap=min_market_cap, top_n=top_n,
+        exclude_sectors=exclude_sectors,
     )
 
 
@@ -876,15 +883,23 @@ def scan_buyback_announcements(
     min_price: float = 5.0,
     min_market_cap: float = 500_000_000,
     top_n: int = 15,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """Recent buyback announcements: stocks with new repurchase authorizations
     in last N days. Ranked by buyback size as % of market cap. Long holding
     period (3-6 months) — swing watch list, not direct entry.
+
+    `exclude_sectors`: defaults to ["Industrials","Consumer Cyclical",
+    "Healthcare"] per 4yr backtest. Healthcare buybacks uniquely weak
+    (40% win — likely "weak R&D pipeline" signal). Skipping these lifts
+    buyback returns +43.19% -> +84.91% and DD 18.6% -> 8.4%. Pass [] to
+    disable.
     """
     return scanners.scan_buyback_announcements(
         tickers=tickers, universe_file=universe_file,
         max_days_since_announcement=max_days_since_announcement,
         min_price=min_price, min_market_cap=min_market_cap, top_n=top_n,
+        exclude_sectors=exclude_sectors,
     )
 
 
