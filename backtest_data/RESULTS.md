@@ -189,7 +189,46 @@ WIDER on high-vol names (let losers run) and TIGHTER on low-vol names
 because the "62% of losers show by t+1" pattern is universal, not
 volatility-dependent.
 
-**6. The ONE effective loser-killer is the -5% t+1 stop.**
+**6. Sector matters marginally — skip Industrials is the only sector filter worth applying.**
+
+Pulled GICS sector via yfinance for each ticker; bucketed 524 long-direction
+small-cap rows by sector.
+
+| Sector | N | Win% | AvgT5 | Sim Ret | DD |
+|---|---:|---:|---:|---:|---:|
+| Healthcare | 212 | 50.5 | +1.67% | +62.00% | 18.3% |
+| Technology | 64 | 65.6 | +0.88% | +11.96% | 7.1% |
+| Real Estate | 57 | 64.9 | +0.79% | +6.83% | 2.4% |
+| Financial Services | 54 | **72.2** | +2.07% | +17.79% | 2.5% |
+| **Industrials** | 43 | **41.9** | **+0.22%** | **+1.22%** | 4.8% |
+| Communication Services | 38 | 44.7 | +4.20% | +24.26% | 9.1% |
+| Energy | 34 | 50.0 | +0.26% | +2.04% | 7.8% |
+| Consumer Cyclical | 27 | 59.3 | +1.40% | +3.91% | 4.5% |
+
+Sector filter test:
+
+| Filter | Trades | Return | DD |
+|---|---:|---:|---:|
+| Baseline (all sectors) | 448 | +152.55% | 22.06% |
+| **Skip Industrials only** | **423** | **+153.37%** | **19.80%** |
+| Skip Industrials + Energy | 404 | +146.97% | 19.07% |
+| Healthcare + Financials + Tech only | 315 | +108.40% | 19.48% |
+| ONLY Financial Services | 54 | +17.79% | 2.52% |
+
+**Skip Industrials** is the FIRST refinement that wins on both dimensions:
++0.8pp return AND -2.2pp DD. Industrials standalone has 41.9% win rate
+(below 50%) and +0.22% avg — a true drag.
+
+Speculation on why: Industrials 8-Ks are disproportionately capex
+announcements, plant closures, or business reorganizations — not the
+deal/catalyst type that drives bullish drift. The keyword scanner reads
+them as long via item-code 1.01 but the underlying isn't actually a
+positive catalyst.
+
+Updated operating rule: skip Industrials sector on small-cap bullish_8k.
+All other sector filters reduce return more than they help.
+
+**7. The ONE effective loser-killer is the -5% t+1 stop.**
 
 62% of t+5 losers were already down at t+1. The -5% t+1 close stop
 catches the worst of them. This is already in the validated rule and
