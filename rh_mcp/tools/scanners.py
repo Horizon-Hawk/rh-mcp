@@ -334,6 +334,7 @@ def scan_bullish_8k(
             universe_file=universe_file,
             lookback_minutes=lookback_minutes,
             deep_scan=True,  # direction classifier path
+            use_finbert=False,  # live-scan: skip the slow FinBERT fallback
             # Pull more than top_n raw so the post-filter to direction=long
             # still leaves enough survivors.
             top_n=max(top_n * 3, 30),

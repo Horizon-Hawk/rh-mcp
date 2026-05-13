@@ -103,6 +103,7 @@ def analyze(
     recent_filings_count: int = DEFAULT_RECENT_FILINGS_COUNT,
     top_n: int = DEFAULT_TOP_N,
     deep_scan: bool = False,
+    use_finbert: bool = True,
 ) -> dict:
     """Scan recent 8-K filings for high-signal item codes on tradable tickers.
 
@@ -193,7 +194,6 @@ def analyze(
     # gets a vote when no historical matches exist.
     if deep_scan and matched:
         from rh_mcp.analysis import edgar_history_classifier as _hc
-        from rh_mcp.analysis import edgar_finbert_classifier as _fb
         for f in matched:
             acc = f.get("accession_no")
             if not acc:
@@ -219,7 +219,14 @@ def analyze(
             else:
                 f["historical_error"] = hc_res.get("error")
 
-            # Fallback: FinBERT sentiment on the filing body
+            # Fallback: FinBERT sentiment on the filing body. Off by default in
+            # live-scan paths (use_finbert=False) because the model load +
+            # per-chunk CPU inference adds 30-90 sec per ambiguous filing —
+            # unacceptable when scan_bullish_8k is called interactively.
+            # Backtest / batch paths can re-enable it for fuller coverage.
+            if not use_finbert:
+                continue
+            from rh_mcp.analysis import edgar_finbert_classifier as _fb
             fb_res = _fb.classify_8k_filing(
                 accession_no=acc, ticker=f.get("ticker"),
                 filing_url=f.get("filing_url"), cik=f.get("cik"),
