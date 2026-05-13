@@ -323,6 +323,8 @@ def simulate_combined(
 def run(
     eightk_csv: Path = DEFAULT_8K_CSV,
     momentum_csv: Path = DEFAULT_MOMENTUM_CSV,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict:
     print(f"[combined] loading 8K corpus  ← {eightk_csv}", file=sys.stderr)
     eightk_rows = _load_8k_corpus(Path(eightk_csv))
@@ -330,6 +332,24 @@ def run(
     print(f"[combined] loading momentum corpus  ← {momentum_csv}", file=sys.stderr)
     mom_rows = _load_momentum_corpus(Path(momentum_csv))
     print(f"[combined]   {len(mom_rows)} rows", file=sys.stderr)
+
+    if start_date or end_date:
+        def _in_range(r):
+            d = r.get("filing_date") or r.get("date") or ""
+            if start_date and d < start_date:
+                return False
+            if end_date and d > end_date:
+                return False
+            return True
+        before_8k, before_mom = len(eightk_rows), len(mom_rows)
+        eightk_rows = [r for r in eightk_rows if _in_range(r)]
+        mom_rows = [r for r in mom_rows if _in_range(r)]
+        print(
+            f"[combined] date filter [{start_date or '...'} .. {end_date or '...'}]:\n"
+            f"[combined]   8K rows: {before_8k} → {len(eightk_rows)}\n"
+            f"[combined]   momentum rows: {before_mom} → {len(mom_rows)}",
+            file=sys.stderr,
+        )
 
     # Enrich tickers for cap/float lookups (only 8K rows need this; momentum already
     # comes from small_cap_universe so we know they're small)
@@ -413,12 +433,19 @@ def _parse_args(argv):
     p = argparse.ArgumentParser(description="Combined small-cap thesis backtest")
     p.add_argument("--eightk-csv", default=str(DEFAULT_8K_CSV))
     p.add_argument("--momentum-csv", default=str(DEFAULT_MOMENTUM_CSV))
+    p.add_argument("--start-date", default=None, help="YYYY-MM-DD inclusive")
+    p.add_argument("--end-date", default=None, help="YYYY-MM-DD inclusive")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = _parse_args(argv or sys.argv[1:])
-    run(eightk_csv=Path(args.eightk_csv), momentum_csv=Path(args.momentum_csv))
+    run(
+        eightk_csv=Path(args.eightk_csv),
+        momentum_csv=Path(args.momentum_csv),
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
     return 0
 
 

@@ -162,7 +162,13 @@ def _detect_frd(bars, idx: int, allow_no_forward: bool = False) -> dict | None:
     }
 
 
-def _scan_ticker(ticker: str, lookback_days: int, min_gap_pct: float = GAG_MIN_GAP_PCT) -> list[dict]:
+def _scan_ticker(
+    ticker: str,
+    lookback_days: int,
+    min_gap_pct: float = GAG_MIN_GAP_PCT,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
     try:
         df = yf.Ticker(ticker).history(
             period=f"{max(lookback_days + 30, 90)}d",
@@ -177,6 +183,11 @@ def _scan_ticker(ticker: str, lookback_days: int, min_gap_pct: float = GAG_MIN_G
     out: list[dict] = []
     n = len(df)
     for i in range(21, n - 5):
+        date_str = df.index[i].strftime("%Y-%m-%d")
+        if start_date and date_str < start_date:
+            continue
+        if end_date and date_str > end_date:
+            continue
         gag_sig = _detect_gap_and_go(df, i, min_gap_pct=min_gap_pct)
         frd_sig = _detect_frd(df, i)
         for sig in (gag_sig, frd_sig):
@@ -221,6 +232,8 @@ def run(
     lookback_days: int = 365,
     workers: int = 8,
     min_gap_pct: float = GAG_MIN_GAP_PCT,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict:
     universe = _load_universe(Path(universe_file))
     if not universe:
@@ -234,7 +247,7 @@ def run(
     all_signals: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
-            ex.submit(_scan_ticker, t, lookback_days, min_gap_pct): t
+            ex.submit(_scan_ticker, t, lookback_days, min_gap_pct, start_date, end_date): t
             for t in universe
         }
         done = 0
@@ -417,6 +430,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--min-gap-pct", type=float, default=GAG_MIN_GAP_PCT,
                    help="Gap-and-go threshold as decimal (e.g. 0.30 for 30 percent)")
+    p.add_argument("--start-date", default=None, help="YYYY-MM-DD signal-date filter (inclusive)")
+    p.add_argument("--end-date", default=None, help="YYYY-MM-DD signal-date filter (inclusive)")
     return p.parse_args(argv)
 
 
@@ -428,6 +443,8 @@ def main(argv: list[str] | None = None) -> int:
         lookback_days=args.lookback_days,
         workers=args.workers,
         min_gap_pct=args.min_gap_pct,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
     return 0
 

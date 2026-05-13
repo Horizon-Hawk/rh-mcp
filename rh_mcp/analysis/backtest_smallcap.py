@@ -337,17 +337,134 @@ def simulate_equity_curve(
         "skipped_weekly_limit": skipped_weekly,
         "skipped_concurrent": skipped_concurrent,
         "skipped_floor": skipped_floor,
+        # Full per-day equity history is needed for regime-overfit detection
+        # (quarterly clustering metric). It can get long on multi-year corpora
+        # but the memory cost is bounded by the number of distinct dates.
+        "equity_history": equity_history,
         "equity_history_len": len(equity_history),
     }
+
+
+# ---------------------------------------------------------------------------
+# Regime-overfit detection — automatic warnings on each strategy's results
+# ---------------------------------------------------------------------------
+
+def _quarterly_breakdown(equity_history: list[tuple]) -> list[dict]:
+    """Bucket per-day equity by calendar quarter, compute return per quarter.
+
+    Used by the regime-overfit checks: if 60%+ of total return came from one
+    quarter, the strategy is regime-concentrated, not stable.
+    """
+    if not equity_history:
+        return []
+    quarters: dict[str, list[tuple]] = {}
+    for date_str, eq in equity_history:
+        try:
+            y, m, _ = (int(p) for p in date_str.split("-"))
+            q = (m - 1) // 3 + 1
+            quarters.setdefault(f"{y}-Q{q}", []).append((date_str, eq))
+        except Exception:
+            continue
+    out: list[dict] = []
+    for key in sorted(quarters.keys()):
+        pts = quarters[key]
+        if len(pts) < 2:
+            continue
+        start_eq = pts[0][1]
+        end_eq = pts[-1][1]
+        if start_eq <= 0:
+            continue
+        ret_pct = (end_eq / start_eq - 1) * 100
+        out.append({
+            "quarter": key,
+            "start_eq": round(start_eq, 2),
+            "end_eq": round(end_eq, 2),
+            "return_pct": round(ret_pct, 2),
+        })
+    return out
+
+
+def _regime_warnings(sim: dict, spy_return_pct: float | None) -> list[str]:
+    """Inspect a sim result and return human-readable warnings if the
+    strategy looks regime-overfit. Returns empty list if no concerns.
+
+    Three checks (any one fires a warning):
+    1. Strategy return > 2× SPY return for the same period (5× = severe)
+    2. Best quarter contributes > 60% of total return (clustered)
+    3. Max drawdown > 50% of total return (low risk-adjusted reward)
+    """
+    warns: list[str] = []
+    ret = sim["total_return_pct"]
+    dd = sim["max_drawdown_pct"]
+
+    # Check 1: SPY ratio
+    if spy_return_pct is not None and ret > 0 and spy_return_pct > 1.0:
+        ratio = ret / spy_return_pct
+        if ratio >= 5.0:
+            warns.append(f"return is {ratio:.1f}x SPY ({spy_return_pct:+.1f}%) — SEVERE regime risk")
+        elif ratio >= 2.0:
+            warns.append(f"return is {ratio:.1f}x SPY ({spy_return_pct:+.1f}%) — possible regime overfit")
+
+    # Check 2: Quarterly clustering — best quarter contribution
+    quarterly = _quarterly_breakdown(sim.get("equity_history") or [])
+    if quarterly and ret > 0:
+        # Compute approximate quarterly contributions: sum of returns in each
+        # (treating quarters as roughly equal-sized buckets of the equity curve).
+        # If one quarter's return alone is > 60% of total return, that's clustered.
+        positive_qs = [q for q in quarterly if q["return_pct"] > 0]
+        if positive_qs:
+            best = max(positive_qs, key=lambda q: q["return_pct"])
+            # Compare best quarter's return to the total (rough heuristic)
+            if best["return_pct"] > 0 and best["return_pct"] / ret > 0.6:
+                warns.append(
+                    f"best quarter {best['quarter']} ({best['return_pct']:+.1f}%) "
+                    f"is >60% of total return — trades clustered"
+                )
+
+    # Check 3: DD vs return ratio
+    if ret > 0 and dd > 0 and dd / ret > 0.5:
+        warns.append(f"max DD {dd:.1f}% > 50% of total return {ret:+.1f}% — poor risk/reward")
+
+    return warns
+
+
+def _split_rows_by_date_ratio(
+    rows: list[dict],
+    in_sample_ratio: float = 0.75,
+) -> tuple[list[dict], list[dict]]:
+    """Split rows chronologically: first `in_sample_ratio` by date → in-sample,
+    rest → out-of-sample. Used for OOS validation.
+    """
+    dated = [r for r in rows if r.get("filing_date")]
+    if not dated:
+        return [], []
+    dated.sort(key=lambda r: _date_key(r["filing_date"]))
+    cutoff_idx = int(len(dated) * in_sample_ratio)
+    return dated[:cutoff_idx], dated[cutoff_idx:]
 
 
 def run(
     corpus_path: Path = DEFAULT_CORPUS,
     output_path: Path = DEFAULT_OUTPUT,
     direction_only: str | None = None,   # 'long' / 'short' / None=all
+    start_date: str | None = None,       # YYYY-MM-DD inclusive
+    end_date: str | None = None,         # YYYY-MM-DD inclusive
 ) -> dict:
     rows = _load_corpus(corpus_path)
     print(f"[backtest] loaded {len(rows)} rows from {corpus_path}", file=sys.stderr)
+
+    if start_date or end_date:
+        before = len(rows)
+        rows = [
+            r for r in rows
+            if (not start_date or (r.get("filing_date") or "") >= start_date)
+            and (not end_date or (r.get("filing_date") or "") <= end_date)
+        ]
+        print(
+            f"[backtest] date filter [{start_date or '...'} .. {end_date or '...'}] "
+            f"narrowed {before} → {len(rows)} rows",
+            file=sys.stderr,
+        )
 
     # Optional direction filter — only score signals matching a single direction
     # (e.g. 'long' to score the bullish 8-K subset against the small-cap thesis).
@@ -455,6 +572,25 @@ def run(
         f"{'EndEq':>11} {'Ret%':>8} {'PeakEq':>11} {'MaxDD%':>7}"
     )
     print("-" * 105)
+    # Compute SPY benchmark up-front so each strategy's warnings can reference it
+    dated_rows = [r for r in enriched if r.get("filing_date")]
+    spy_ret_pct: float | None = None
+    spy_summary_line: str | None = None
+    start_d = end_d = None
+    if dated_rows:
+        dated_rows.sort(key=lambda r: _date_key(r["filing_date"]))
+        start_d = dated_rows[0]["filing_date"]
+        end_d = dated_rows[-1]["filing_date"]
+        spy = spy_benchmark(start_d, end_d)
+        if "error" not in spy:
+            spy_ret_pct = spy.get("total_return_pct")
+            spy_summary_line = (
+                f"{'SPY_buy_and_hold (' + start_d + '→' + end_d + ')':<45} "
+                f"{'long':>5} {'B&H':>5} {'—':>7} "
+                f"${spy['ending_equity']:>10.0f} {spy['total_return_pct']:>+8.2f} "
+                f"${spy['peak_equity']:>10.0f} {spy['max_drawdown_pct']:>7.2f}"
+            )
+
     sim_results: list[dict] = []
     for label, rs, side in sim_buckets:
         # Short side: only t+1 holds (per finding that bearish t+5 reverts positive)
@@ -467,23 +603,27 @@ def run(
                 f"${sim['ending_equity']:>10.0f} {sim['total_return_pct']:>+8.2f} "
                 f"${sim['peak_equity']:>10.0f} {sim['max_drawdown_pct']:>7.2f}"
             )
+            # Regime-overfit warnings: inline below the main row when triggered
+            for w in _regime_warnings(sim, spy_ret_pct):
+                print(f"    [WARN] {w}")
+            # Out-of-sample split: last 25% of dates as holdout
+            in_rs, oos_rs = _split_rows_by_date_ratio(rs, in_sample_ratio=0.75)
+            if oos_rs:
+                in_sim = simulate_equity_curve(in_rs, label + "_IS", hold_days=hold, side=side)
+                oos_sim = simulate_equity_curve(oos_rs, label + "_OOS", hold_days=hold, side=side)
+                in_ret = in_sim.get("total_return_pct", 0)
+                oos_ret = oos_sim.get("total_return_pct", 0)
+                flag = ""
+                if in_ret > 0 and oos_ret < in_ret * 0.25:
+                    flag = "  [WARN] OOS << IS — regime-fitted"
+                print(
+                    f"    OOS-split: in-sample {in_ret:+.2f}% ({in_sim['trades_taken']} trades) | "
+                    f"out-of-sample {oos_ret:+.2f}% ({oos_sim['trades_taken']} trades){flag}"
+                )
 
-    # ----------------- SPY benchmark -----------------
-    dated_rows = [r for r in enriched if r.get("filing_date")]
-    if dated_rows:
-        dated_rows.sort(key=lambda r: _date_key(r["filing_date"]))
-        start_d = dated_rows[0]["filing_date"]
-        end_d = dated_rows[-1]["filing_date"]
-        spy = spy_benchmark(start_d, end_d)
-        if "error" not in spy:
-            print(
-                f"{'SPY_buy_and_hold (' + start_d + '→' + end_d + ')':<45} "
-                f"{'long':>5} {'B&H':>5} {'—':>7} "
-                f"${spy['ending_equity']:>10.0f} {spy['total_return_pct']:>+8.2f} "
-                f"${spy['peak_equity']:>10.0f} {spy['max_drawdown_pct']:>7.2f}"
-            )
-        else:
-            print(f"SPY benchmark unavailable: {spy['error']}")
+    # SPY summary row
+    if spy_summary_line:
+        print(spy_summary_line)
 
     # Write per-row CSV for further analysis
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,12 +645,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Per-row output CSV")
     p.add_argument("--direction", choices=("long", "short"), default=None,
                    help="Filter to a single 8-K direction (placeholder — corpus lacks direction column)")
+    p.add_argument("--start-date", default=None, help="YYYY-MM-DD filing-date filter (inclusive)")
+    p.add_argument("--end-date", default=None, help="YYYY-MM-DD filing-date filter (inclusive)")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
-    run(Path(args.corpus), Path(args.output), direction_only=args.direction)
+    run(
+        Path(args.corpus), Path(args.output),
+        direction_only=args.direction,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
     return 0
 
 
