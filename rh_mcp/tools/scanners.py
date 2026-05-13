@@ -309,6 +309,60 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def scan_bullish_8k(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    lookback_minutes: int = 720,
+    top_n: int = 10,
+) -> dict:
+    """Live scan for the only stress-test-validated 8-K edge: small-cap
+    bullish-direction filings, 5-day hold, no float/quality filter.
+
+    4-year backtest (2022-2026) return: +143.94% (~25% annualized), 22.7%
+    max DD. Positive in every year including 2022 bear (+21.67%).
+
+    Defaults to small_cap_universe.txt ($300M-$2B Finviz tickers).
+    deep_scan is forced True because direction classification is required.
+    Only candidates with direction='long' are returned.
+    """
+    from rh_mcp.analysis import scan_8k as _s8k
+    if universe_file is None:
+        universe_file = "C:/Users/algee/TraderMCP-RH/small_cap_universe.txt"
+    try:
+        result = _s8k.analyze(
+            tickers=tickers,
+            universe_file=universe_file,
+            lookback_minutes=lookback_minutes,
+            deep_scan=True,  # direction classifier path
+            # Pull more than top_n raw so the post-filter to direction=long
+            # still leaves enough survivors.
+            top_n=max(top_n * 3, 30),
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_bullish_8k failed: {e}"}
+
+    if not result.get("success"):
+        return result
+
+    bullish = [
+        c for c in result.get("candidates", [])
+        if c.get("direction") == "long"
+    ]
+    bullish = bullish[:top_n]
+
+    return {
+        **result,
+        "candidates": bullish,
+        "filtered_to": "direction=long, small-cap universe",
+        "strategy": "bullish_8k (no float/quality filter)",
+        "validated_return_4yr": "+143.94% gross / ~25% annualized",
+        "validated_max_dd": "22.7%",
+        "recommended_hold_days": 5,
+        "long_count": len(bullish),
+        "short_count": 0,
+    }
+
+
 def scan_gap_and_go(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
