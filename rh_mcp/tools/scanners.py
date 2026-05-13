@@ -335,6 +335,7 @@ def scan_bullish_8k(
     cap_range: str = "small",
     lookback_minutes: int = 720,
     top_n: int = 10,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """Live scan for the stress-test-validated 8-K bullish edge.
 
@@ -365,6 +366,10 @@ def scan_bullish_8k(
         cap_range: 'small' | 'mid' | 'stack'.
         lookback_minutes: how far back to look for fresh 8-Ks.
         top_n: cap on returned candidates.
+        exclude_sectors: list of GICS sectors to drop after scan. Defaults to
+            ["Industrials"] — backtest showed this sector has 41.9% win rate
+            and drags total return. Pass [] to disable. Sectors fetched via
+            yfinance per candidate (1 call each, fast since N is small).
     """
     from rh_mcp.analysis import scan_8k as _s8k
 
@@ -427,6 +432,34 @@ def scan_bullish_8k(
     for c in bullish:
         if ticker_origin:
             c["universe"] = ticker_origin.get((c.get("ticker") or "").upper(), "unknown")
+
+    # Sector filter — default skips Industrials per validated backtest finding.
+    # Pulls sector from yfinance per surviving candidate.
+    if exclude_sectors is None:
+        exclude_sectors = ["Industrials"]
+    excluded_sectors_set = {s for s in exclude_sectors if s}
+    sector_skipped: list[dict] = []
+    if excluded_sectors_set:
+        try:
+            import yfinance as yf
+            kept: list[dict] = []
+            for c in bullish:
+                t = (c.get("ticker") or "").upper()
+                sector = None
+                try:
+                    sector = (yf.Ticker(t).info or {}).get("sector")
+                except Exception:
+                    sector = None
+                c["sector"] = sector
+                if sector in excluded_sectors_set:
+                    sector_skipped.append({"ticker": t, "sector": sector})
+                else:
+                    kept.append(c)
+            bullish = kept
+        except ImportError:
+            # yfinance unavailable — log but don't fail the scan
+            pass
+
     bullish = bullish[:top_n]
 
     if cap_range == "stack":
@@ -444,6 +477,8 @@ def scan_bullish_8k(
         "filtered_to": filt,
         "strategy": "bullish_8k (no float/quality filter)",
         "cap_range": cap_range,
+        "excluded_sectors": sorted(excluded_sectors_set),
+        "sector_skipped": sector_skipped,
         "validated_return_4yr": ret_meta,
         "validated_max_dd": dd_meta,
         "recommended_hold_days": 5,
@@ -663,6 +698,43 @@ def scan_pead(
         )
     except Exception as e:
         return {"success": False, "error": f"scan_pead failed: {e}"}
+
+
+def scan_pead_negative(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_since_earnings: int = 1,
+    max_days_since_earnings: int = 10,
+    min_neg_gap_pct: float = 3.0,
+    max_extended_drop_pct: float = 15.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    min_market_cap: float = 300_000_000,
+    top_n: int = 15,
+) -> dict:
+    """PEAD NEGATIVE BOUNCE: buys oversold post-earnings flushes — counter-
+    intuitive but TOP-EV strategy per 4yr stress test.
+
+      +141.66% / 4yr cumulative, 50.4% win rate, +1.18% avg per trade,
+      558 trades, max DD 29.4%, profitable 4 of 5 years incl. 2022 (+33.43%).
+
+    Filters: earnings 1-10d ago, t+1 close DOWN ≥3% from pre-earnings close,
+    today's price still below pre-earnings close (bounce intact), not extended
+    further past -15% (skip falling knives). Mechanical 4-day hold.
+    """
+    from rh_mcp.analysis import pead_negative
+    try:
+        return pead_negative.analyze(
+            tickers=tickers, universe_file=universe_file,
+            min_days_since_earnings=min_days_since_earnings,
+            max_days_since_earnings=max_days_since_earnings,
+            min_neg_gap_pct=min_neg_gap_pct,
+            max_extended_drop_pct=max_extended_drop_pct,
+            min_price=min_price, min_avg_volume=min_avg_volume,
+            min_market_cap=min_market_cap, top_n=top_n,
+        )
+    except Exception as e:
+        return {"success": False, "error": f"scan_pead_negative failed: {e}"}
 
 
 def scan_momentum_12_1(

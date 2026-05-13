@@ -510,6 +510,7 @@ def scan_bullish_8k(
     cap_range: str = "small",
     lookback_minutes: int = 720,
     top_n: int = 10,
+    exclude_sectors: list[str] | None = None,
 ) -> dict:
     """Scan for the validated 8-K bullish edge. `cap_range` selects
     universe: 'small' ($300M-$2B, +143.94% / 22.7% DD), 'mid' ($2B-$10B,
@@ -523,11 +524,16 @@ def scan_bullish_8k(
     OPERATING RULE (small-cap only): exit at t+1 close if position is
     down >=5% from entry. Adds +8.6pp return, -0.6pp DD on small-cap
     backtests. DO NOT apply on mid-cap or stack — it inflates DD there.
+
+    `exclude_sectors`: defaults to ["Industrials"] per validated finding
+    (41.9% win rate on that sector, drags total return). Pass [] to take
+    everything; sectors are pulled per-candidate from yfinance.
     """
     return scanners.scan_bullish_8k(
         tickers=tickers, universe_file=universe_file,
         cap_range=cap_range,
         lookback_minutes=lookback_minutes, top_n=top_n,
+        exclude_sectors=exclude_sectors,
     )
 
 
@@ -764,6 +770,38 @@ def scan_pead(
         min_days_since_earnings=min_days_since_earnings,
         max_days_since_earnings=max_days_since_earnings,
         min_eps_beat_pct=min_eps_beat_pct, min_gap_pct=min_gap_pct,
+        min_price=min_price, min_avg_volume=min_avg_volume,
+        min_market_cap=min_market_cap, top_n=top_n,
+    )
+
+
+@mcp.tool()
+def scan_pead_negative(
+    tickers: list[str] | None = None,
+    universe_file: str | None = None,
+    min_days_since_earnings: int = 1,
+    max_days_since_earnings: int = 10,
+    min_neg_gap_pct: float = 3.0,
+    max_extended_drop_pct: float = 15.0,
+    min_price: float = 5.0,
+    min_avg_volume: int = 200_000,
+    min_market_cap: float = 300_000_000,
+    top_n: int = 15,
+) -> dict:
+    """PEAD NEGATIVE BOUNCE — TOP EV: +141.66% / 4yr cumulative,
+    50.4% win, +1.18% avg per trade (558 trades, max DD 29.4%, +33% in 2022 bear).
+
+    Counter-intuitive: buys oversold post-earnings flushes. Filters: earnings
+    1-10d ago, t+1 close DOWN ≥3% from pre-earnings close, today still below
+    pre-earnings close (bounce intact), not extended past -15% (skip falling
+    knives). Mechanical 4-day hold per backtest spec.
+    """
+    return scanners.scan_pead_negative(
+        tickers=tickers, universe_file=universe_file,
+        min_days_since_earnings=min_days_since_earnings,
+        max_days_since_earnings=max_days_since_earnings,
+        min_neg_gap_pct=min_neg_gap_pct,
+        max_extended_drop_pct=max_extended_drop_pct,
         min_price=min_price, min_avg_volume=min_avg_volume,
         min_market_cap=min_market_cap, top_n=top_n,
     )
