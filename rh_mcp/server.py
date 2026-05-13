@@ -546,15 +546,23 @@ def scan_stack(
     buyback_days: int = 14,
     pead_min_market_cap: float = 50_000_000_000,
     top_n_per_strategy: int = 10,
+    per_scanner_timeout_sec: int = 120,
 ) -> dict:
-    """Run the 4 validated edge scanners (bullish_8k, buyback, pead, pead_negative) SEQUENTIALLY and aggregate candidates with strategy tags. Must be sequential — parallel scanner calls hang."""
+    """START the 4-scanner stack (bullish_8k, buyback, pead, pead_negative) as a BACKGROUND job. Returns a job_id immediately — poll scan_stack_status(job_id) for progress + results. Per-scanner hang detection: any scanner exceeding per_scanner_timeout_sec is marked 'hung' and skipped."""
     return scanners.scan_stack(
         cap_range=cap_range,
         lookback_minutes=lookback_minutes,
         buyback_days=buyback_days,
         pead_min_market_cap=pead_min_market_cap,
         top_n_per_strategy=top_n_per_strategy,
+        per_scanner_timeout_sec=per_scanner_timeout_sec,
     )
+
+
+@mcp.tool()
+def scan_stack_status(job_id: str) -> dict:
+    """Poll a scan_stack background job. Returns per-scanner status (pending|running|completed|failed|hung), elapsed times, aggregated candidates so far. Hang warnings appear on running scanners that exceed 2× their timeout."""
+    return scanners.scan_stack_status(job_id)
 
 
 @mcp.tool()

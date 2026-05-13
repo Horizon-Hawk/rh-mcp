@@ -1233,52 +1233,185 @@ def get_fundamentals(ticker: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# scan_stack — background-job version with per-scanner hang detection.
+# Synchronous version was rejected by the MCP client (~2-3 min runtime
+# exceeded client tool-call timeout). Fire-and-forget pattern: start the job,
+# poll for progress via scan_stack_status(job_id).
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+import time as _time
+import uuid as _uuid
+
+_SCAN_JOBS: dict = {}
+_SCAN_JOBS_LOCK = _threading.Lock()
+
+
+def _run_scan_stack_background(
+    job_id: str,
+    cap_range: str,
+    lookback_minutes: int,
+    buyback_days: int,
+    pead_min_market_cap: float,
+    top_n_per_strategy: int,
+    per_scanner_timeout_sec: int,
+) -> None:
+    """Worker thread — runs scanners sequentially, marks any that exceed the
+    per-scanner timeout as 'hung' and continues with the next."""
+    scanners_to_run = [
+        ("bullish_8k", lambda: scan_bullish_8k(
+            cap_range=cap_range, lookback_minutes=lookback_minutes, top_n=top_n_per_strategy)),
+        ("buyback", lambda: scan_buyback_announcements(
+            max_days_since_announcement=buyback_days, top_n=top_n_per_strategy)),
+        ("pead", lambda: scan_pead(
+            min_market_cap=pead_min_market_cap, top_n=top_n_per_strategy)),
+        ("pead_negative", lambda: scan_pead_negative(top_n=top_n_per_strategy)),
+    ]
+
+    for name, fn in scanners_to_run:
+        with _SCAN_JOBS_LOCK:
+            _SCAN_JOBS[job_id]["scanners"][name]["status"] = "running"
+            _SCAN_JOBS[job_id]["scanners"][name]["started_at"] = _time.time()
+
+        # Inner thread runs the actual scanner so we can timeout it.
+        inner_result: list = [None]
+
+        def _inner():
+            try:
+                inner_result[0] = fn()
+            except Exception as e:
+                inner_result[0] = {"success": False, "error": f"{type(e).__name__}: {e}"}
+
+        worker = _threading.Thread(target=_inner, daemon=True)
+        worker.start()
+        worker.join(timeout=per_scanner_timeout_sec)
+        elapsed = round(_time.time() - _SCAN_JOBS[job_id]["scanners"][name]["started_at"], 1)
+
+        with _SCAN_JOBS_LOCK:
+            scan_entry = _SCAN_JOBS[job_id]["scanners"][name]
+            scan_entry["elapsed_sec"] = elapsed
+            if worker.is_alive():
+                # Scanner is still running after timeout — mark hung and skip
+                scan_entry["status"] = "hung"
+                scan_entry["error"] = f"exceeded per-scanner timeout of {per_scanner_timeout_sec}s"
+                # We can't kill the thread cleanly in Python; daemon=True means it
+                # dies with the process. Just abandon it.
+            else:
+                result = inner_result[0] or {"success": False, "error": "no result"}
+                scan_entry["result"] = result
+                if result.get("success"):
+                    scan_entry["status"] = "completed"
+                    scan_entry["candidate_count"] = len(result.get("candidates") or [])
+                    for c in (result.get("candidates") or []):
+                        _SCAN_JOBS[job_id]["all_candidates"].append({**c, "strategy": name})
+                else:
+                    scan_entry["status"] = "failed"
+                    scan_entry["error"] = result.get("error", "unknown error")
+
+    with _SCAN_JOBS_LOCK:
+        _SCAN_JOBS[job_id]["status"] = "completed"
+        _SCAN_JOBS[job_id]["finished_at"] = _time.time()
+        _SCAN_JOBS[job_id]["total_candidates"] = len(_SCAN_JOBS[job_id]["all_candidates"])
+        _SCAN_JOBS[job_id]["total_elapsed_sec"] = round(
+            _SCAN_JOBS[job_id]["finished_at"] - _SCAN_JOBS[job_id]["started_at"], 1
+        )
+
+
 def scan_stack(
     cap_range: str = "stack",
     lookback_minutes: int = 1440,
     buyback_days: int = 14,
     pead_min_market_cap: float = 50_000_000_000,
     top_n_per_strategy: int = 10,
+    per_scanner_timeout_sec: int = 120,
 ) -> dict:
-    """Run the 4 validated edge scanners SEQUENTIALLY and aggregate.
+    """Start the 4-scanner stack as a BACKGROUND job. Returns a job_id immediately.
 
-    Scanners (must be sequential — parallel calls hang):
-      1. scan_bullish_8k     (cap_range=stack by default)
-      2. scan_buyback_announcements
-      3. scan_pead           (mega-cap drift)
-      4. scan_pead_negative  (top EV)
+    Synchronous scan_stack hangs because total runtime exceeds the MCP client's
+    tool-call timeout. Use scan_stack_status(job_id) to poll progress and pull
+    results once any/all scanners complete.
 
-    Returns per-strategy results + a flat all_candidates list tagged with
-    `strategy` so downstream callers can rank across edges.
+    Each scanner has a hard per_scanner_timeout_sec; if a scanner runs longer
+    it is marked 'hung' in the status and the worker moves to the next one.
     """
-    out = {"success": True, "strategies": {}, "all_candidates": []}
+    job_id = _uuid.uuid4().hex[:10]
+    started_at = _time.time()
 
-    r1 = scan_bullish_8k(cap_range=cap_range, lookback_minutes=lookback_minutes, top_n=top_n_per_strategy)
-    out["strategies"]["bullish_8k"] = r1
-    if r1.get("success"):
-        for c in r1.get("candidates", []) or []:
-            out["all_candidates"].append({**c, "strategy": "bullish_8k"})
+    with _SCAN_JOBS_LOCK:
+        _SCAN_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "started_at": started_at,
+            "config": {
+                "cap_range": cap_range,
+                "lookback_minutes": lookback_minutes,
+                "buyback_days": buyback_days,
+                "pead_min_market_cap": pead_min_market_cap,
+                "top_n_per_strategy": top_n_per_strategy,
+                "per_scanner_timeout_sec": per_scanner_timeout_sec,
+            },
+            "scanners": {
+                "bullish_8k": {"status": "pending"},
+                "buyback": {"status": "pending"},
+                "pead": {"status": "pending"},
+                "pead_negative": {"status": "pending"},
+            },
+            "all_candidates": [],
+        }
 
-    r2 = scan_buyback_announcements(max_days_since_announcement=buyback_days, top_n=top_n_per_strategy)
-    out["strategies"]["buyback_announcements"] = r2
-    if r2.get("success"):
-        for c in r2.get("candidates", []) or []:
-            out["all_candidates"].append({**c, "strategy": "buyback"})
+    worker = _threading.Thread(
+        target=_run_scan_stack_background,
+        args=(job_id, cap_range, lookback_minutes, buyback_days,
+              pead_min_market_cap, top_n_per_strategy, per_scanner_timeout_sec),
+        daemon=True,
+    )
+    worker.start()
 
-    r3 = scan_pead(min_market_cap=pead_min_market_cap, top_n=top_n_per_strategy)
-    out["strategies"]["pead"] = r3
-    if r3.get("success"):
-        for c in r3.get("candidates", []) or []:
-            out["all_candidates"].append({**c, "strategy": "pead"})
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "running",
+        "started_at": started_at,
+        "message": f"4-scanner stack started. Poll with scan_stack_status('{job_id}'). Expected ~2-3 min total; per-scanner timeout is {per_scanner_timeout_sec}s.",
+    }
 
-    r4 = scan_pead_negative(top_n=top_n_per_strategy)
-    out["strategies"]["pead_negative"] = r4
-    if r4.get("success"):
-        for c in r4.get("candidates", []) or []:
-            out["all_candidates"].append({**c, "strategy": "pead_negative"})
 
-    out["total_candidates"] = len(out["all_candidates"])
-    return out
+def scan_stack_status(job_id: str) -> dict:
+    """Check progress of a scan_stack background job.
+
+    Returns the full job state: per-scanner status (pending|running|completed|failed|hung),
+    elapsed times, aggregated candidates so far. Safe to call any time after
+    scan_stack — partial results are visible as soon as each scanner completes.
+    """
+    with _SCAN_JOBS_LOCK:
+        job = _SCAN_JOBS.get(job_id)
+        if not job:
+            return {"success": False, "error": f"unknown job_id: {job_id}"}
+        now = _time.time()
+        snapshot = {
+            "success": True,
+            "job_id": job_id,
+            "status": job["status"],
+            "started_at": job["started_at"],
+            "elapsed_sec": round(now - job["started_at"], 1),
+            "config": job["config"],
+            "scanners": {k: dict(v) for k, v in job["scanners"].items()},
+            "all_candidates": list(job["all_candidates"]),
+            "total_candidates": len(job["all_candidates"]),
+        }
+        if "finished_at" in job:
+            snapshot["finished_at"] = job["finished_at"]
+            snapshot["total_elapsed_sec"] = job.get("total_elapsed_sec")
+        # Mark stuck scanners that have been running > 2× per-scanner timeout
+        timeout = job["config"]["per_scanner_timeout_sec"]
+        for name, s in snapshot["scanners"].items():
+            if s.get("status") == "running" and "started_at" in s:
+                running_for = round(now - s["started_at"], 1)
+                s["running_for_sec"] = running_for
+                if running_for > timeout * 2:
+                    s["hang_warning"] = True
+        return snapshot
 
 
 def get_portfolio_earnings(
