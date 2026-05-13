@@ -139,9 +139,9 @@ def set_trailing_stop(ticker: str, quantity: float, trail_amount: float, trail_t
 
 
 @mcp.tool()
-def set_stop_loss(ticker: str, quantity: float, stop_price: float, time_in_force: str = "gtc") -> dict:
+def set_stop_loss(ticker: str, quantity: float, stop_price: float, time_in_force: str = "gtc", account_number: str | None = None) -> dict:
     """Native fixed stop-loss SELL order at a specific price."""
-    return orders.set_stop_loss(ticker, quantity, stop_price, time_in_force)
+    return orders.set_stop_loss(ticker, quantity, stop_price, time_in_force, account_number)
 
 
 @mcp.tool()

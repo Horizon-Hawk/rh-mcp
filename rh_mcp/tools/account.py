@@ -78,22 +78,62 @@ def get_portfolio(account_number: str | None = None) -> dict:
 
 
 def get_positions(account_number: str | None = None) -> dict:
-    """Get all open stock positions with quantity, avg cost, current price, P&L."""
+    """Get all open stock positions with quantity, avg cost, current price, P&L.
+
+    Scopes to the specified account_number — necessary because rh.build_holdings()
+    is account-agnostic and silently returns the primary account's holdings.
+    """
     rh = client()
     acct = account_number or default_account()
-    holdings = rh.build_holdings() or {}
-    positions = [
-        {
-            "symbol": sym,
-            "quantity": _to_float(h.get("quantity")),
-            "avg_cost": _to_float(h.get("average_buy_price")),
-            "current_price": _to_float(h.get("price")),
-            "market_value": _to_float(h.get("equity")),
-            "gain_loss": _to_float(h.get("equity_change")),
-            "pct_gain": _to_float(h.get("percent_change")),
-        }
-        for sym, h in holdings.items()
-    ]
+
+    # Account-scoped positions endpoint. build_holdings() ignores account_number
+    # so we hit /positions/ directly with the account filter.
+    try:
+        raw = rh.helper.request_get(
+            f"https://api.robinhood.com/positions/?account_number={acct}&nonzero=true",
+            "pagination",
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"positions fetch failed: {e}"}
+
+    positions = []
+    for p in raw:
+        qty = _to_float(p.get("quantity"))
+        if not qty or qty == 0:
+            continue
+        instrument_url = p.get("instrument")
+        try:
+            symbol = rh.stocks.get_symbol_by_url(instrument_url) if instrument_url else None
+        except Exception:
+            symbol = None
+        if not symbol:
+            continue
+        avg_cost = _to_float(p.get("average_buy_price"))
+        try:
+            current_price = _to_float(rh.stocks.get_latest_price(symbol)[0])
+        except Exception:
+            current_price = None
+        market_value = (qty * current_price) if (qty and current_price) else None
+        gain_loss = (
+            (current_price - avg_cost) * qty
+            if (avg_cost is not None and current_price is not None)
+            else None
+        )
+        pct_gain = (
+            ((current_price - avg_cost) / avg_cost * 100)
+            if (avg_cost and current_price)
+            else None
+        )
+        positions.append({
+            "symbol": symbol,
+            "quantity": qty,
+            "avg_cost": avg_cost,
+            "current_price": current_price,
+            "market_value": market_value,
+            "gain_loss": gain_loss,
+            "pct_gain": pct_gain,
+        })
+
     return {"success": True, "account_number": acct, "count": len(positions), "positions": positions}
 
 
@@ -324,24 +364,42 @@ def get_open_option_orders(account_number: str | None = None) -> dict:
 
 
 def list_accounts() -> dict:
-    """List all linked Robinhood accounts."""
+    """List all linked Robinhood accounts (brokerage + IRA/retirement)."""
     rh = client()
-    profile = rh.load_account_profile()
-    if not profile:
-        return {"success": False, "error": "no account profile returned"}
-    # robin_stocks returns a single account dict; for multi-account a different endpoint is needed
-    return {
-        "success": True,
-        "accounts": [{
-            "account_number": profile.get("account_number"),
-            "type": profile.get("type"),
-            "buying_power": _to_float(profile.get("buying_power")),
-            "cash_held_for_orders": _to_float(profile.get("cash_held_for_orders")),
-            "day_trade_count": profile.get("day_trade_count"),
-            "pattern_day_trader": profile.get("is_pinned"),
-            "margin_balances": profile.get("margin_balances"),
-        }],
-    }
+    try:
+        raw = rh.helper.request_get(
+            "https://api.robinhood.com/accounts/", "pagination"
+        ) or []
+    except Exception as e:
+        raw = []
+        pagination_error = str(e)
+    else:
+        pagination_error = None
+
+    if not raw:
+        profile = rh.load_account_profile()
+        if not profile:
+            return {
+                "success": False,
+                "error": f"no accounts returned (pagination_error={pagination_error})",
+            }
+        raw = [profile]
+
+    accounts = []
+    for a in raw:
+        accounts.append({
+            "account_number": a.get("account_number"),
+            "type": a.get("type"),
+            "brokerage_account_type": a.get("brokerage_account_type"),
+            "buying_power": _to_float(a.get("buying_power")),
+            "cash": _to_float(a.get("cash")),
+            "cash_held_for_orders": _to_float(a.get("cash_held_for_orders")),
+            "day_trade_count": a.get("day_trade_count"),
+            "pattern_day_trader": a.get("is_pinned"),
+            "deactivated": a.get("deactivated"),
+            "margin_balances": a.get("margin_balances"),
+        })
+    return {"success": True, "accounts": accounts}
 
 
 def get_portfolio_history(

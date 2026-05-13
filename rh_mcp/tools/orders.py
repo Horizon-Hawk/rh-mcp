@@ -108,10 +108,28 @@ def close_position(
     acct = account_number or default_account()
     sym = ticker.strip().upper()
 
-    holdings = rh.build_holdings(account_number=acct) or {}
-    if sym not in holdings:
+    # build_holdings() ignores account_number; use the positions endpoint scoped to acct
+    try:
+        raw_positions = rh.helper.request_get(
+            f"https://api.robinhood.com/positions/?account_number={acct}&nonzero=true",
+            "pagination",
+        ) or []
+    except Exception as e:
+        return {"success": False, "error": f"positions fetch failed: {e}"}
+
+    held_qty = 0.0
+    for p in raw_positions:
+        instrument_url = p.get("instrument")
+        try:
+            psym = rh.stocks.get_symbol_by_url(instrument_url) if instrument_url else None
+        except Exception:
+            psym = None
+        if psym == sym:
+            held_qty = float(p.get("quantity") or 0)
+            break
+
+    if held_qty == 0:
         return {"success": False, "error": f"no open position in {sym}"}
-    held_qty = float(holdings[sym].get("quantity") or 0)
     qty = quantity if quantity is not None else held_qty
     if qty > held_qty + 0.0001:
         return {"success": False, "error": f"requested {qty} > held {held_qty}"}
@@ -195,16 +213,20 @@ def set_stop_loss(
     quantity: float,
     stop_price: float,
     time_in_force: str = "gtc",
+    account_number: str | None = None,
 ) -> dict:
     """Place a native stop-loss SELL order at a fixed price (not trailing)."""
     rh = client()
     sym = ticker.strip().upper()
-    result = rh.order_sell_stop_loss(
-        symbol=sym,
-        quantity=quantity,
-        stopPrice=stop_price,
-        timeInForce=time_in_force,
-    )
+    kwargs = {
+        "symbol": sym,
+        "quantity": quantity,
+        "stopPrice": stop_price,
+        "timeInForce": time_in_force,
+    }
+    if account_number:
+        kwargs["account_number"] = account_number
+    result = rh.order_sell_stop_loss(**kwargs)
     if not result or "id" not in result:
         return {"success": False, "error": "stop-loss order failed", "raw": result}
     return {
