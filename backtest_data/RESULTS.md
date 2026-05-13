@@ -96,6 +96,37 @@ pulls in additional trades that bring more losers, inflating DD.
 Run via `simulate_equity_curve(..., t1_stop_pct=-0.05)` or
 `python _run_stack_backtest.py --t1-stop-pct -0.05`.
 
+### Real-account margin backtest (full framework rules + slippage)
+
+Run via `python _run_margin_backtest.py`. Uses the user's actual
+$36,541.78 equity, $35,000 margin limit (RH-set), 8% APR margin rate,
+and the FRAMEWORK risk tiers (A+ 5% / A 3% / B 1.5%, 25% max position
+— not the small-cap-adjusted 3/2/1% used elsewhere on this page).
+
+| Config | Slippage | End equity | Return | Max DD |
+|---|---:|---:|---:|---:|
+| Cash only | 0% | $450,643 | +1133% | 25.5% |
+| **Cash only** | **0.4%** | **$249,916** | **+584%** | 30.9% |
+| Cash only | 0.6% | $178,486 | +388% | 34.8% |
+| Margin max=5 | 0% | $657,837 | +1700% | 34.9% |
+| **Margin max=5** | **0.4%** | **$313,197** | **+757%** | 40.5% |
+| Margin max=5 | 0.6% | $218,607 | +498% | 43.4% |
+| Margin max=10 | 0.4% | $335,668 | +819% | 40.5% |
+
+The numbers above use the full framework risk tiers (5/3/1.5%), not the
+small-cap-reduced tiers (3/2/1%) used in other sections of this file.
+This is what the user's actual account would do running the four
+validated strategies at framework sizing.
+
+Realistic deployment mid-case (margin max=5, 0.4% slippage):
+**$36.5K → $313K over 4 years (~58% annualized net)**. Beats SPY's
++70.64% / 4yr by ~10x at the cost of 40% max drawdown.
+
+Slippage expands drawdown — losers become deeper losers when both
+entry and exit cross the spread. The 0.4% slippage case shows DD
+30.9% (cash) and 40.5% (margin); the 0% slippage case shows 25.5%
+and 34.9% respectively.
+
 ### bullish_8k STACK (small-cap + mid-cap, one shared $36K bucket)
 
 Concatenated rows: 935 long-direction filings across both universes
