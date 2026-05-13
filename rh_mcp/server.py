@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from rh_mcp.tools import (
     quotes, account, orders, shorting, notifications, scanners,
     alerts, analysis, trade_log, sizing, pipeline,
-    options_trading,
+    options_trading, social,
 )
 
 
@@ -1469,6 +1469,22 @@ def covered_call(ticker: str, expiry: str, strike: float, quantity: int, limit_p
 def cash_secured_put(ticker: str, expiry: str, strike: float, quantity: int, limit_price: float, account_number: str | None = None) -> dict:
     """Sell a cash-secured put. Requires cash to buy at strike if assigned (strike × 100 × quantity)."""
     return options_trading.cash_secured_put(ticker, expiry, strike, quantity, limit_price, account_number)
+
+
+# ---------------------------------------------------------------------------
+# Social sentiment (StockTwits)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_stocktwits_pulse(ticker: str, limit: int = 30) -> dict:
+    """Recent StockTwits messages for a ticker with bull/bear sentiment summary. Public endpoint, ~200 req/hr rate limit per IP. Returns net_bullish_pct: +100 = all bull, -100 = all bear, 0 = balanced."""
+    return social.get_stocktwits_pulse(ticker, limit)
+
+
+@mcp.tool()
+def scan_stocktwits_trending(limit: int = 15) -> dict:
+    """Currently trending tickers on StockTwits (highest activity in last ~5 min). Returns symbols with watchlist counts."""
+    return social.scan_stocktwits_trending(limit)
 
 
 # ---------------------------------------------------------------------------
