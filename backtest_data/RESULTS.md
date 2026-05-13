@@ -74,6 +74,28 @@ small-cap 23% — lower drawdown for equivalent cumulative return.
 Corpus: `8k_history_midcap_4yr.csv` (4,035 rows / 848 tickers).
 Universe: `mid_cap_universe.txt`.
 
+### t+1 stop-loss rule — small-cap ONLY
+
+For small-cap bullish_8k, the t+1 close is highly predictive of t+5
+outcome: 62% of t+5 losers were already down at t+1. Backtest shows
+exiting at t+1 when down >=5% IMPROVES both return and DD on small-cap.
+The rule does NOT transfer to mid-cap or stack:
+
+| Universe / config | No stop | -5% t+1 stop | Net |
+|---|---:|---:|---|
+| Small-cap only | +143.94% / 22.7% DD | **+152.55% / 22.1% DD** | **+8.6pp / -0.6 DD** ✓ |
+| Mid-cap only | +147.95% / 21.6% DD | +141.10% / 20.8% DD | -6.9pp / -0.8 DD (worse) |
+| Stack (max=5) | +372.92% / 20.8% DD | +374.02% / 27.3% DD | +1.1pp / **+6.5 DD** (worse) |
+| Stack (max=10) | +529.59% / 35.7% DD | +498.49% / 40.2% DD | -31pp / +4.5 DD (worse) |
+
+**Why it only works on small-caps:** mid-cap "down >5% by t+1" filings
+have meaningful recovery to t+5; cutting them locks in losses
+unnecessarily. On stack, the freed concurrent slot from an early exit
+pulls in additional trades that bring more losers, inflating DD.
+
+Run via `simulate_equity_curve(..., t1_stop_pct=-0.05)` or
+`python _run_stack_backtest.py --t1-stop-pct -0.05`.
+
 ### bullish_8k STACK (small-cap + mid-cap, one shared $36K bucket)
 
 Concatenated rows: 935 long-direction filings across both universes

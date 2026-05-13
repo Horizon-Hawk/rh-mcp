@@ -188,6 +188,7 @@ def simulate_equity_curve(
     max_concurrent: int = 5,
     max_position_pct: float = 0.15,
     side: str = "long",
+    t1_stop_pct: float | None = None,
 ) -> dict:
     """Walk-forward equity simulator using the small-cap risk framework.
 
@@ -293,8 +294,24 @@ def simulate_equity_curve(
         else:
             risk_pct = 0.01  # B
 
-        # Pick return based on hold period
-        ret = r.get("next_day_return") if hold_days == 1 else r.get("five_day_return")
+        # Pick return based on hold period; when t1_stop_pct is set and
+        # next_day_return is at or below threshold (long) or at or above
+        # the inverse threshold (short), exit at t+1 instead of holding
+        # to t+5. Free alpha on the small-cap bullish_8k strategy at -5%.
+        t1 = r.get("next_day_return")
+        t5 = r.get("five_day_return")
+        effective_hold = hold_days
+        if hold_days == 1:
+            ret = t1
+        elif (
+            t1_stop_pct is not None and t1 is not None
+            and ((side == "long" and t1 < t1_stop_pct)
+                 or (side == "short" and t1 > -t1_stop_pct))
+        ):
+            ret = t1
+            effective_hold = 1
+        else:
+            ret = t5
         if ret is None:
             continue
         # Short side: invert the return so a -2% drop becomes a +2% gain
@@ -306,11 +323,12 @@ def simulate_equity_curve(
         position_value = risk_dollars / stop_distance_pct
         position_value = min(position_value, equity * max_position_pct)
         pnl = position_value * ret
-        # Add to open positions; closed at exit_date
+        # Add to open positions; closed at exit_date (uses effective_hold, which
+        # is 1 if the t1 stop fired even when nominal hold_days=5).
         from datetime import date as _d, timedelta
         try:
             y, m, day = (int(p) for p in date.split("-"))
-            exit_date = (_d(y, m, day) + timedelta(days=hold_days)).isoformat()
+            exit_date = (_d(y, m, day) + timedelta(days=effective_hold)).isoformat()
         except Exception:
             exit_date = date
         open_positions.append({

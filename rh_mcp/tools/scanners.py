@@ -339,15 +339,25 @@ def scan_bullish_8k(
     """Live scan for the stress-test-validated 8-K bullish edge.
 
     cap_range:
-      - "small": small_cap_universe.txt only (4yr: +143.94% / 22.7% DD)
+      - "small": small_cap_universe.txt only (4yr: +143.94% / 22.7% DD;
+                 +152.55% / 22.1% DD with t+1 -5% stop — see below)
       - "mid":   mid_cap_universe.txt only   (4yr: +147.95% / 21.6% DD)
       - "stack": both universes merged       (regime-complementary —
-                 mid-cap dominates bears, small-cap dominates bulls)
+                 mid-cap dominates bears, small-cap dominates bulls;
+                 4yr stack +372.92% / 20.8% DD at max 5 concurrent)
 
     Backtest provenance: 5-day hold, no float/quality filter, deep_scan
     direction classifier (keyword + historical, FinBERT disabled for speed).
     Only candidates with direction='long' are returned. Each candidate is
     tagged with `universe` ('small' or 'mid') when scanning the stack.
+
+    OPERATING RULE (small-cap only): if t+1 close shows the position down
+    >=5% from entry close, exit at t+1 instead of holding to t+5. This rule
+    adds +8.6pp return and shaves 0.6pp DD on small-cap-only backtests.
+    DO NOT apply this rule to mid-cap or stack deployments — on those
+    universes it slightly hurts return and inflates drawdown because the
+    "down >5% at t+1" subset has more recovery on mid-caps and the freed
+    concurrent slot pulls in marginal additional trades.
 
     Args:
         tickers: explicit list (overrides cap_range / universe_file).

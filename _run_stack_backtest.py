@@ -52,7 +52,8 @@ def _date_key(s):
 def simulate_stack(rows, hold_days=5, starting_equity=36_000.0,
                    max_concurrent=5, max_position_pct=0.15,
                    stop_distance_pct=0.03,
-                   daily_loss_limit_pct=0.06, weekly_loss_limit_pct=0.10):
+                   daily_loss_limit_pct=0.06, weekly_loss_limit_pct=0.10,
+                   t1_stop_pct=None):
     """Walk-forward sim with concurrent limit, shared equity, ticker dedupe.
     Same logic as backtest_combined.simulate_combined but specialized to
     long-only and tracks universe-of-origin for each trade.
@@ -138,13 +139,22 @@ def simulate_stack(rows, hold_days=5, starting_equity=36_000.0,
         position_value = min(equity * risk_pct / stop_distance_pct,
                              equity * max_position_pct)
 
-        ret = r["next_day_return"] if hold_days == 1 else r["five_day_return"]
+        t1 = r["next_day_return"]
+        t5 = r.get("five_day_return")
+        eff_hold = hold_days
+        if hold_days == 1:
+            ret = t1
+        elif t1_stop_pct is not None and t1 is not None and t1 < t1_stop_pct:
+            ret = t1
+            eff_hold = 1
+        else:
+            ret = t5
         if ret is None:
             continue
         pnl = position_value * ret
         try:
             y, m, day = (int(p) for p in date.split("-"))
-            exit_date = (_date(y, m, day) + timedelta(days=hold_days)).isoformat()
+            exit_date = (_date(y, m, day) + timedelta(days=eff_hold)).isoformat()
         except Exception:
             exit_date = date
 
@@ -175,6 +185,15 @@ def simulate_stack(rows, hold_days=5, starting_equity=36_000.0,
 
 
 def main():
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--max-concurrent", type=int, default=5,
+                   help="Concurrent open positions cap (framework default 5)")
+    p.add_argument("--hold-days", type=int, default=5)
+    p.add_argument("--t1-stop-pct", type=float, default=None,
+                   help="If t+1 return below this decimal, exit at t+1 (e.g. -0.05 = -5pct)")
+    args = p.parse_args()
+
     print(f"loading small-cap corpus...", file=sys.stderr)
     sm = load(SMALLCAP_CSV, "small")
     print(f"loading mid-cap corpus...", file=sys.stderr)
@@ -205,9 +224,14 @@ def main():
 
     print()
     print("=" * 80)
-    print("STACK sim (5d hold, ONE $36K bucket, max 5 concurrent across universes)")
+    print(f"STACK sim ({args.hold_days}d hold, ONE $36K bucket, max {args.max_concurrent} concurrent)")
     print("=" * 80)
-    sim = simulate_stack(stack, hold_days=5)
+    sim = simulate_stack(
+        stack,
+        hold_days=args.hold_days,
+        max_concurrent=args.max_concurrent,
+        t1_stop_pct=args.t1_stop_pct,
+    )
     print(f"Total return     : {sim['total_return_pct']:+.2f}%  (${sim['starting_equity']:,.0f} → ${sim['ending_equity']:,.0f})")
     print(f"Max drawdown     : {sim['max_drawdown_pct']:.2f}%")
     print(f"Peak equity      : ${sim['peak_equity']:,.0f}")

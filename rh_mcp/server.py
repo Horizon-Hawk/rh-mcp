@@ -514,10 +514,15 @@ def scan_bullish_8k(
     """Scan for the validated 8-K bullish edge. `cap_range` selects
     universe: 'small' ($300M-$2B, +143.94% / 22.7% DD), 'mid' ($2B-$10B,
     +147.95% / 21.6% DD), or 'stack' (both — regime-complementary;
-    mid-cap dominates bears, small-cap dominates bulls). Deep_scan
-    direction classifier runs (keyword + historical lookup, FinBERT
-    disabled for speed). Returns direction='long' only. Stack candidates
-    are tagged with their universe of origin.
+    mid-cap dominates bears, small-cap dominates bulls; +372.92% / 20.8%
+    DD on 4yr stack backtest at max 5 concurrent). Deep_scan direction
+    classifier runs (keyword + historical lookup, FinBERT disabled for
+    speed). Returns direction='long' only. Stack candidates tagged with
+    their universe of origin.
+
+    OPERATING RULE (small-cap only): exit at t+1 close if position is
+    down >=5% from entry. Adds +8.6pp return, -0.6pp DD on small-cap
+    backtests. DO NOT apply on mid-cap or stack — it inflates DD there.
     """
     return scanners.scan_bullish_8k(
         tickers=tickers, universe_file=universe_file,
