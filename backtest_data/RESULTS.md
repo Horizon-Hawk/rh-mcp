@@ -17,6 +17,7 @@ position, 6% daily loss limit, 5 concurrent max)
 |---|---|---|---:|---:|---:|---|
 | **`bullish_8k` on small-cap** (no filter) | long | 5d | **+143.94%** | **~25%** | **22.7%** | ✓ VALIDATED — small-cap, all regimes |
 | **`bullish_8k` on mid-cap** (no filter) | long | 5d | **+147.95%** | **~25%** | **21.6%** | ✓ VALIDATED — better in bear, lower DD |
+| **`bullish_8k` STACK** (small + mid, shared $36K, 5 concurrent) | long | 5d | **+372.92%** | **~47%** | **20.8%** | ✓ VALIDATED — 2× trades, lower DD than either alone |
 | **`buyback` (buyback_authorized + dividend_increase)** | long | 5d | **+42.29%** | **~9%** | **18.2%** | ✓ VALIDATED — independent signal pool |
 | **PEAD negative-earnings bounce** (item 2.02, t+1 neg, hold 4d) | long | 4d drift | **+141.66%** | **~24%** | **29.4%** | ✓ VALIDATED — 4 of 5 years positive incl. 2022 (+33%) |
 | bullish_8k + low_float | long | 5d | +44.76% | ~10% | 18.3% | INVALIDATED — filter destroys edge |
@@ -72,6 +73,34 @@ small-cap 23% — lower drawdown for equivalent cumulative return.
 
 Corpus: `8k_history_midcap_4yr.csv` (4,035 rows / 848 tickers).
 Universe: `mid_cap_universe.txt`.
+
+### bullish_8k STACK (small-cap + mid-cap, one shared $36K bucket)
+
+Concatenated rows: 935 long-direction filings across both universes
+(433 small + 502 mid). Walked forward chronologically, max 5 concurrent
+positions across both universes combined.
+
+| Metric | Value |
+|---|---:|
+| Starting equity | $36,000 |
+| Ending equity (4yr) | $170,252 |
+| Total return | **+372.92%** |
+| Annualized | ~47% gross |
+| Max drawdown | **20.8%** (lower than either standalone) |
+| Peak equity | $173,230 |
+| Trades taken | 692 |
+| Trades skipped by concurrent limit | 442 (the edge exceeds framework capacity) |
+| Ticker overlap skips | 16 (rare — universes barely conflict) |
+
+After slippage (~0.3-0.5% × 692 trades = -210-345% drag), realistic
+NET is +150-300% over 4yr = ~25-40% annualized. $200K target realistic
+in 5-8 years compounded, not 12 months.
+
+To raise the cumulative further, increase `max_concurrent` from 5 to
+8-10 — the strategy throws away 442 valid trades hitting the limit.
+But that increases position correlation and effective leverage.
+
+Run via `python _run_stack_backtest.py`.
 
 ### Buyback / dividend_increase (independent signal — body keyword filter)
 

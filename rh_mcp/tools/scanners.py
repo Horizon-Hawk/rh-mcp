@@ -309,34 +309,98 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+_CAP_UNIVERSE_PATHS = {
+    "small": "C:/Users/algee/TraderMCP-RH/small_cap_universe.txt",
+    "mid":   "C:/Users/algee/TraderMCP-RH/mid_cap_universe.txt",
+}
+
+
+def _load_universe_tickers(path: str) -> list[str]:
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        return []
+    out: list[str] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        out.extend(t.strip().upper() for t in line.split() if t.strip())
+    return out
+
+
 def scan_bullish_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
+    cap_range: str = "small",
     lookback_minutes: int = 720,
     top_n: int = 10,
 ) -> dict:
-    """Live scan for the only stress-test-validated 8-K edge: small-cap
-    bullish-direction filings, 5-day hold, no float/quality filter.
+    """Live scan for the stress-test-validated 8-K bullish edge.
 
-    4-year backtest (2022-2026) return: +143.94% (~25% annualized), 22.7%
-    max DD. Positive in every year including 2022 bear (+21.67%).
+    cap_range:
+      - "small": small_cap_universe.txt only (4yr: +143.94% / 22.7% DD)
+      - "mid":   mid_cap_universe.txt only   (4yr: +147.95% / 21.6% DD)
+      - "stack": both universes merged       (regime-complementary —
+                 mid-cap dominates bears, small-cap dominates bulls)
 
-    Defaults to small_cap_universe.txt ($300M-$2B Finviz tickers).
-    deep_scan is forced True because direction classification is required.
-    Only candidates with direction='long' are returned.
+    Backtest provenance: 5-day hold, no float/quality filter, deep_scan
+    direction classifier (keyword + historical, FinBERT disabled for speed).
+    Only candidates with direction='long' are returned. Each candidate is
+    tagged with `universe` ('small' or 'mid') when scanning the stack.
+
+    Args:
+        tickers: explicit list (overrides cap_range / universe_file).
+        universe_file: single-file override (overrides cap_range).
+        cap_range: 'small' | 'mid' | 'stack'.
+        lookback_minutes: how far back to look for fresh 8-Ks.
+        top_n: cap on returned candidates.
     """
     from rh_mcp.analysis import scan_8k as _s8k
-    if universe_file is None:
-        universe_file = "C:/Users/algee/TraderMCP-RH/small_cap_universe.txt"
+
+    # Resolve ticker universe: explicit list > universe_file > cap_range
+    resolved_tickers: list[str] | None = None
+    ticker_origin: dict[str, str] = {}
+    if tickers:
+        resolved_tickers = [t.upper() for t in tickers]
+    elif universe_file:
+        resolved_tickers = _load_universe_tickers(universe_file)
+    else:
+        cr = (cap_range or "small").lower()
+        if cr == "stack":
+            small = _load_universe_tickers(_CAP_UNIVERSE_PATHS["small"])
+            mid = _load_universe_tickers(_CAP_UNIVERSE_PATHS["mid"])
+            for t in small:
+                ticker_origin[t] = "small"
+            for t in mid:
+                # If a ticker appears in both, the more-recent loop wins;
+                # prefer 'small' tag for the rare overlap (smaller caps fit
+                # the validated regime better).
+                ticker_origin.setdefault(t, "mid")
+            # Merge preserving order, dedupe
+            seen: set[str] = set()
+            merged: list[str] = []
+            for t in small + mid:
+                if t not in seen:
+                    seen.add(t)
+                    merged.append(t)
+            resolved_tickers = merged
+        elif cr in _CAP_UNIVERSE_PATHS:
+            resolved_tickers = _load_universe_tickers(_CAP_UNIVERSE_PATHS[cr])
+            for t in resolved_tickers:
+                ticker_origin[t] = cr
+        else:
+            return {"success": False, "error": f"unknown cap_range '{cap_range}'"}
+
+    if not resolved_tickers:
+        return {"success": False, "error": "no tickers resolved from inputs"}
+
     try:
         result = _s8k.analyze(
-            tickers=tickers,
-            universe_file=universe_file,
+            tickers=resolved_tickers,
             lookback_minutes=lookback_minutes,
-            deep_scan=True,  # direction classifier path
-            use_finbert=False,  # live-scan: skip the slow FinBERT fallback
-            # Pull more than top_n raw so the post-filter to direction=long
-            # still leaves enough survivors.
+            deep_scan=True,
+            use_finbert=False,
             top_n=max(top_n * 3, 30),
         )
     except Exception as e:
@@ -349,15 +413,29 @@ def scan_bullish_8k(
         c for c in result.get("candidates", [])
         if c.get("direction") == "long"
     ]
+    # Tag candidates with universe of origin
+    for c in bullish:
+        if ticker_origin:
+            c["universe"] = ticker_origin.get((c.get("ticker") or "").upper(), "unknown")
     bullish = bullish[:top_n]
+
+    if cap_range == "stack":
+        filt = "direction=long, small-cap + mid-cap universes"
+        ret_meta = "+143.94% (small) / +147.95% (mid) — 4yr stress-test"
+        dd_meta = "22.7% small / 21.6% mid"
+    else:
+        filt = f"direction=long, {cap_range}-cap universe"
+        ret_meta = "+143.94% (small) / ~25% annualized" if cap_range == "small" else "+147.95% (mid) / ~25% annualized"
+        dd_meta = "22.7% small" if cap_range == "small" else "21.6% mid"
 
     return {
         **result,
         "candidates": bullish,
-        "filtered_to": "direction=long, small-cap universe",
+        "filtered_to": filt,
         "strategy": "bullish_8k (no float/quality filter)",
-        "validated_return_4yr": "+143.94% gross / ~25% annualized",
-        "validated_max_dd": "22.7%",
+        "cap_range": cap_range,
+        "validated_return_4yr": ret_meta,
+        "validated_max_dd": dd_meta,
         "recommended_hold_days": 5,
         "long_count": len(bullish),
         "short_count": 0,

@@ -507,20 +507,21 @@ def register_futures_uuid(ticker: str, uuid: str) -> dict:
 def scan_bullish_8k(
     tickers: list[str] | None = None,
     universe_file: str | None = None,
+    cap_range: str = "small",
     lookback_minutes: int = 720,
     top_n: int = 10,
 ) -> dict:
-    """Scan for the validated small-cap 8-K bullish edge. Defaults to
-    small_cap_universe.txt, runs deep_scan classification (keyword +
-    historical + FinBERT), filters to direction='long' only. 4-year
-    backtest return: +143.94% (~25% annualized), 22.7% max DD,
-    positive in every year incl. 2022 bear (+21.67%). Recommended
-    5-day hold. THIS IS THE ONLY STRATEGY THAT SURVIVED STRESS TESTING —
-    FRD_LONG, SHORT bearish_8K, and low_float-filtered variants all
-    failed in 2022 / multi-year tests.
+    """Scan for the validated 8-K bullish edge. `cap_range` selects
+    universe: 'small' ($300M-$2B, +143.94% / 22.7% DD), 'mid' ($2B-$10B,
+    +147.95% / 21.6% DD), or 'stack' (both — regime-complementary;
+    mid-cap dominates bears, small-cap dominates bulls). Deep_scan
+    direction classifier runs (keyword + historical lookup, FinBERT
+    disabled for speed). Returns direction='long' only. Stack candidates
+    are tagged with their universe of origin.
     """
     return scanners.scan_bullish_8k(
         tickers=tickers, universe_file=universe_file,
+        cap_range=cap_range,
         lookback_minutes=lookback_minutes, top_n=top_n,
     )
 
