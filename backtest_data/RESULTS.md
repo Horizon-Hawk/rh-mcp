@@ -15,7 +15,8 @@ position, 6% daily loss limit, 5 concurrent max)
 
 | Strategy | Side | Hold | 4-yr Return | Annualized | Max DD | Status |
 |---|---|---|---:|---:|---:|---|
-| **`bullish_8k`** (no float/quality filter) | long | 5d | **+143.94%** | **~25%** | **22.7%** | ✓ VALIDATED — small-cap, all regimes |
+| **`bullish_8k` on small-cap** (no filter) | long | 5d | **+143.94%** | **~25%** | **22.7%** | ✓ VALIDATED — small-cap, all regimes |
+| **`bullish_8k` on mid-cap** (no filter) | long | 5d | **+147.95%** | **~25%** | **21.6%** | ✓ VALIDATED — better in bear, lower DD |
 | **`buyback` (buyback_authorized + dividend_increase)** | long | 5d | **+42.29%** | **~9%** | **18.2%** | ✓ VALIDATED — independent signal pool |
 | **PEAD negative-earnings bounce** (item 2.02, t+1 neg, hold 4d) | long | 4d drift | **+141.66%** | **~24%** | **29.4%** | ✓ VALIDATED — 4 of 5 years positive incl. 2022 (+33%) |
 | bullish_8k + low_float | long | 5d | +44.76% | ~10% | 18.3% | INVALIDATED — filter destroys edge |
@@ -51,6 +52,26 @@ was 1500 days (May 2026 lookback). Momentum strategies cover full window.
 
 `bullish_8k` was POSITIVE in 4 of 5 years and stayed flat in the worst
 year (2025: -0.92%). The only strategy that survives across all regimes.
+
+### bullish_8k on MID-CAP universe ($2B-$10B Finviz cap_mid)
+
+| Year | N | Mid-cap Return | Small-cap Return | Winner |
+|---|---:|---:|---:|---|
+| 2022 (bear) | 106 | **+38.63%** | +21.67% | **Mid-cap** (1.8×) |
+| 2023 (sideways) | 121 | +55.70% | +54.27% | tied |
+| 2024 (bull) | 142 | +9.33% | +27.28% | small-cap |
+| 2025 (bull) | 157 | -4.32% | -0.92% | small-cap (less bad) |
+| 2026 (partial) | 80 | +9.81% | +3.06% | **mid-cap** |
+| **4yr cumulative** | **606** | **+147.95%** | +143.94% | tied |
+
+Mid-cap wins decisively in bear and recovery regimes; small-cap wins in
+sustained bull. Different signal pools (mid-cap fires more 8-Ks per
+ticker due to filing density). **Stack both for ~250 signals/yr** with
+regime-complementary characteristics. Mid-cap max DD is 16% vs
+small-cap 23% — lower drawdown for equivalent cumulative return.
+
+Corpus: `8k_history_midcap_4yr.csv` (4,035 rows / 848 tickers).
+Universe: `mid_cap_universe.txt`.
 
 ### Buyback / dividend_increase (independent signal — body keyword filter)
 
