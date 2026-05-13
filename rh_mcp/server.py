@@ -1483,8 +1483,20 @@ def get_stocktwits_pulse(ticker: str, limit: int = 30) -> dict:
 
 @mcp.tool()
 def scan_stocktwits_trending(limit: int = 15) -> dict:
-    """Currently trending tickers on StockTwits (highest activity in last ~5 min). Returns symbols with watchlist counts."""
+    """Currently trending tickers on StockTwits (highest activity in last ~5 min). Returns symbols with watchlist counts. NOTE: StockTwits unauth API is now Cloudflare-blocked — expect HTTP 403."""
     return social.scan_stocktwits_trending(limit)
+
+
+@mcp.tool()
+def scan_apewisdom_trending(filter: str = "all-stocks", limit: int = 25) -> dict:
+    """Top mentioned tickers on Reddit + light Twitter via Apewisdom. filter options: all-stocks, wallstreetbets, stocks, stockmarket, options, spacs, shortsqueeze, pennystocks, robinhoodpennystocks, twitter. Returns rank, mentions, mention_delta_pct, sentiment_score (-1 to +1), sentiment label."""
+    return social.scan_apewisdom_trending(filter, limit)
+
+
+@mcp.tool()
+def get_apewisdom_ticker(ticker: str, filter: str = "all-stocks") -> dict:
+    """Apewisdom data for a specific ticker — searches the top 100 trending list. Returns rank, mention delta, sentiment if the ticker is currently trending; otherwise success=False with 'not in trending list'."""
+    return social.get_apewisdom_ticker(ticker, filter)
 
 
 # ---------------------------------------------------------------------------
