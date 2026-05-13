@@ -96,6 +96,68 @@ pulls in additional trades that bring more losers, inflating DD.
 Run via `simulate_equity_curve(..., t1_stop_pct=-0.05)` or
 `python _run_stack_backtest.py --t1-stop-pct -0.05`.
 
+### Negative findings on bullish_8k — what does NOT predict losers
+
+Tested various pre-filters and position-management overlays on the
+small-cap bullish_8k corpus (535 long-direction rows over 4yr). Don't
+re-test these. None of them improved the baseline (+152.55% / 22.1% DD
+with -5% t+1 stop).
+
+**1. direction_confidence does NOT discriminate winners from losers.**
+
+| Confidence | N | Win% | Avg t+5 | Sim Return | Max DD |
+|---|---:|---:|---:|---:|---:|
+| 0.50 (item-codes only) | 74 | 47.3 | +0.89% | +11.23% | 10.0% |
+| 0.70-0.84 | 295 | 57.6 | +1.31% | +85.39% | 8.1% |
+| 0.85+ | 166 | 53.6 | +2.00% | +59.01% | 12.8% |
+
+Winners avg conf: 0.724. Losers avg conf: 0.716. Essentially identical.
+
+**2. Filtering out low-confidence trades HURTS total return.**
+
+| Filter | Trades | Return | Max DD |
+|---|---:|---:|---:|
+| Baseline (take all longs) | 448 | **+152.55%** | 22.1% |
+| Body-keyword only (skip 0.50) | 385 | +126.15% | 18.3% |
+| Confidence >= 0.85 | 166 | +59.01% | 12.8% |
+
+Removing low-confidence trades trades return for less DD — not a free
+win. Compounding math favors more signal volume when marginal trade
+expectancy is still positive.
+
+**3. Individual body_keywords don't discriminate.**
+
+All four high-volume keywords (N >= 20) have positive avg returns:
+- convertible_debt_issuance: 50.7% win / +3.94% avg (positive skew)
+- buyback_authorized: 55.2% win / +1.13% avg
+- fda_approval: 55.3% win / +2.25% avg
+- definitive_agreement_acquisition: 71.4% win / +2.72% avg
+
+No specific keyword combination predicts losers. The body-keyword
+scanner adds value AGGREGATE (filings with body keywords beat item-only),
+not at the individual keyword level.
+
+**4. Scale-in / pyramid management UNDERPERFORMS baseline.**
+
+| Strategy | Best per-$ return |
+|---|---:|
+| Baseline (full size entry, hold 5d, -5% stop) | **+1.453%/$** |
+| Stage entries (½ + ½ on +3% confirmation) | +1.335%/$ |
+| Pyramid (1 + 1 on +3% confirmation) | +1.335%/$ |
+
+Why scaling in hurts: t+1 → t+5 drift (~+0.8% avg) is smaller than the
+full five_day_return (~+2% avg). The add tranche captures less return
+per dollar. Plus the concurrent-position limit already binds hard in
+the equity sim — pyramiding into winners consumes slots that new
+signals can't take.
+
+**5. The ONE effective loser-killer is the -5% t+1 stop.**
+
+62% of t+5 losers were already down at t+1. The -5% t+1 close stop
+catches the worst of them. This is already in the validated rule and
+adds +8.6pp return / -0.6pp DD on small-cap. DO NOT apply to mid-cap
+or stack (inflates DD there).
+
 ### Stock RSI(2) — invalidated by slippage (do not deploy)
 
 Tested via the `backtest` MCP tool with strategy=rsi2_long on both
