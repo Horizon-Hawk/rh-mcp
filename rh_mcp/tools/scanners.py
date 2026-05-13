@@ -366,10 +366,14 @@ def scan_bullish_8k(
         cap_range: 'small' | 'mid' | 'stack'.
         lookback_minutes: how far back to look for fresh 8-Ks.
         top_n: cap on returned candidates.
-        exclude_sectors: list of GICS sectors to drop after scan. Defaults to
-            ["Industrials"] — backtest showed this sector has 41.9% win rate
-            and drags total return. Pass [] to disable. Sectors fetched via
-            yfinance per candidate (1 call each, fast since N is small).
+        exclude_sectors: list of GICS sectors to drop after scan. Default
+            depends on cap_range:
+              small  -> ["Industrials"]
+              mid    -> ["Consumer Cyclical", "Real Estate"]
+              stack  -> ["Industrials", "Consumer Cyclical", "Real Estate"]
+            These are the universe-specific drag sectors from the 4yr
+            backtest. Pass [] to disable; pass a custom list to override.
+            Sectors fetched via yfinance per candidate (fast since N is small).
     """
     from rh_mcp.analysis import scan_8k as _s8k
 
@@ -433,10 +437,23 @@ def scan_bullish_8k(
         if ticker_origin:
             c["universe"] = ticker_origin.get((c.get("ticker") or "").upper(), "unknown")
 
-    # Sector filter — default skips Industrials per validated backtest finding.
-    # Pulls sector from yfinance per surviving candidate.
+    # Sector filter — default exclude list depends on cap_range per cross-
+    # strategy backtest findings:
+    #   small: ["Industrials"] (Industrials 41.9% win, +0.22% avg)
+    #   mid:   ["Consumer Cyclical", "Real Estate"] (CC -1.75%, RE -1.67%
+    #          on mid-cap; Industrials is +0.51% on mid so KEEP it)
+    #   stack: union of both (small + mid have zero ticker overlap)
+    # Skipping the right sectors per universe shifted returns by:
+    #   sm_bullish_8k +0.8pp ret / -2.3pp DD
+    #   mid_bullish_8k +84pp ret / -5.1pp DD
     if exclude_sectors is None:
-        exclude_sectors = ["Industrials"]
+        cr_norm = (cap_range or "small").lower()
+        if cr_norm == "mid":
+            exclude_sectors = ["Consumer Cyclical", "Real Estate"]
+        elif cr_norm == "stack":
+            exclude_sectors = ["Industrials", "Consumer Cyclical", "Real Estate"]
+        else:
+            exclude_sectors = ["Industrials"]
     excluded_sectors_set = {s for s in exclude_sectors if s}
     sector_skipped: list[dict] = []
     if excluded_sectors_set:

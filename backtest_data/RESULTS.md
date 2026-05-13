@@ -235,6 +235,51 @@ catches the worst of them. This is already in the validated rule and
 adds +8.6pp return / -0.6pp DD on small-cap. DO NOT apply to mid-cap
 or stack (inflates DD there).
 
+### Cross-strategy sector analysis — different drags per strategy
+
+Ran sector breakdown on all four validated strategies. Each has its OWN
+weak-sector profile. The "skip Industrials" rule from sm_bullish_8k does
+NOT transfer cleanly — it's strategy-specific.
+
+| Strategy | Baseline | Best sector filter | Filtered Result | Gain |
+|---|---:|---|---:|---|
+| sm_bullish_8k | +152.55% / 22.1% DD | Skip Industrials | +153.37% / 19.8% DD | +0.8pp / -2.3pp |
+| **mid_bullish_8k** | +147.95% / 21.6% DD | Skip Cons Cyclical + Real Estate | **+232.00% / 16.5% DD** | **+84pp / -5.1pp** |
+| **buyback** | +43.19% / 18.6% DD | Skip Indust + CC + Healthcare | **+84.91% / 8.4% DD** | **+42pp / -10.2pp** |
+| **pead_bounce** | +141.66% / 29.4% DD | Skip 5 weak sectors | **+241.30% / 18.3% DD** | **+100pp / -11.1pp** |
+
+The mid-cap, buyback, and PEAD improvements are LARGE — far bigger
+than any other refinement we've tested.
+
+Per-strategy weak sectors (win<50% AND avg<+0.5%):
+
+| Strategy | Weak sectors |
+|---|---|
+| sm_bullish_8k | Industrials |
+| mid_bullish_8k | Consumer Cyclical, Real Estate |
+| buyback | Healthcare (40% win!), Consumer Cyclical, Industrials |
+| pead_bounce | Industrials, Energy, Basic Materials, Real Estate, Consumer Defensive |
+
+Notable observations:
+- **Industrials weak in 3 of 4** (sm, buyback, pead) — but NOT mid (+0.51%)
+- **Healthcare uniquely weak on buyback** (40% win) — healthcare buybacks
+  often signal "weak R&D pipeline" rather than capital return strength
+- **Financial Services + Technology universally strong** (>60% win, >+0.5%
+  avg in every strategy)
+- **PEAD is the most sector-sensitive** (5 weak sectors) — drift after a
+  bad earnings reaction depends heavily on the sector's recovery dynamics
+
+scan_bullish_8k now defaults exclude_sectors based on cap_range:
+- cap_range='small' -> ["Industrials"]
+- cap_range='mid'   -> ["Consumer Cyclical", "Real Estate"]
+- cap_range='stack' -> ["Industrials", "Consumer Cyclical", "Real Estate"]
+
+Buyback and PEAD don't have live MCP tools yet — when they're added,
+each should hardcode its own sector exclusion list.
+
+Run via `python _run_sector_cross_strategy.py` to refresh per-strategy
+sector breakdowns after corpus rebuilds.
+
 ### Stock RSI(2) — invalidated by slippage (do not deploy)
 
 Tested via the `backtest` MCP tool with strategy=rsi2_long on both
