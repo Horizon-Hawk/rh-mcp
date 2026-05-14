@@ -831,6 +831,13 @@ def check_news(news_seen: set, cache: dict, batch_offset: int, digest_pending: l
                 )
                 log.info(f"T1 injected: {ticker} [{catalyst}] {title[:60]}")
             else:
+                # Drop micro PT shuffles (<5%) — pure noise, not even worth
+                # digesting. Held/active-alert tickers are exempt: ticker in
+                # active_set already promoted to T1 in get_news_tier, so we
+                # only get here for unrelated names.
+                if catalyst in ("UPGRADE", "DOWNGRADE") and parse_pt_change_pct(title) < 5.0:
+                    log.info(f"Dropped: {ticker} [{catalyst}] PT<5% noise")
+                    continue
                 digest_pending.append({
                     "ticker": ticker, "catalyst": catalyst, "title": title,
                     "source": source, "published": pub,
