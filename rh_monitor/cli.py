@@ -168,7 +168,10 @@ def list_windows():
 
 
 def is_claude_window(title: str) -> bool:
-    """Claude Code windows start with a Braille character (U+2800–U+28FF)."""
+    """Claude Code windows start with a Braille character (U+2800–U+28FF)
+    when actively rendering. When idle the title may have no Braille and no
+    'claude' substring — caller must use process-based fallback.
+    """
     if not title:
         return False
     if "⠀" <= title[0] <= "⣿":
@@ -176,10 +179,105 @@ def is_claude_window(title: str) -> bool:
     return CLAUDE_WINDOW_TITLE.lower() in title.lower()
 
 
+def _claude_hwnds_by_process() -> set:
+    """Fallback: find Claude Code window HWNDs via the node.exe process tree.
+    Returns set of HWND ints owned by any node.exe process whose command line
+    references claude. Works even when title doesn't match Braille/substring.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return set()
+    # Collect PIDs of claude/node processes (Claude Code ships as claude.exe on
+    # Windows but legacy installs use node.exe with claude in cmdline)
+    target_pids = set()
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            is_claude_proc = (
+                name in ("claude.exe", "claude")
+                or (name == "node.exe" and "claude" in cmdline)
+            )
+            if not is_claude_proc:
+                continue
+            target_pids.add(proc.info["pid"])
+            # also include parent terminal (Windows Terminal wraps it)
+            try:
+                p = psutil.Process(proc.info["pid"])
+                while p.ppid() > 0:
+                    p = psutil.Process(p.ppid())
+                    pname = (p.name() or "").lower()
+                    if pname in ("windowsterminal.exe", "openconsole.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
+                        target_pids.add(p.pid)
+                    else:
+                        break
+            except Exception:
+                pass
+        except Exception:
+            continue
+    if not target_pids:
+        return set()
+    # Enumerate all windows, find ones owned by target PIDs
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+    IsWindowVisible = user32.IsWindowVisible
+    matches: set = set()
+    def cb(hwnd, _lparam):
+        try:
+            pid = wintypes.DWORD()
+            GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in target_pids:
+                # Only keep windows that have a title — top-level windows do
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    matches.add(int(hwnd))
+        except Exception:
+            pass
+        return True
+    user32.EnumWindows(EnumWindowsProc(cb), 0)
+    # Windows Terminal / ConPTY host: claude.exe owns only hidden console hwnds.
+    # The user-visible window belongs to WindowsTerminal.exe (or wezterm/etc).
+    # Only inject when that host window is the foreground — avoids typing into
+    # the wrong tab.
+    try:
+        fg_hwnd = user32.GetForegroundWindow()
+        if fg_hwnd:
+            fg_pid = wintypes.DWORD()
+            GetWindowThreadProcessId(fg_hwnd, ctypes.byref(fg_pid))
+            try:
+                fg_name = (psutil.Process(fg_pid.value).name() or "").lower()
+            except Exception:
+                fg_name = ""
+            if fg_name in ("windowsterminal.exe", "wezterm-gui.exe", "alacritty.exe"):
+                matches.add(int(fg_hwnd))
+    except Exception:
+        pass
+    return matches
+
+
 def find_claude_window():
+    """Find Claude Code's window. Primary: title-based via pygetwindow.
+    Fallback: process-based via Win32 enumeration (handles idle/title-changed
+    states that fail the title check).
+    """
+    # Primary path — fast, works when title matches
     for w in gw.getAllWindows():
         if w.title and is_claude_window(w.title):
             return w
+    # Fallback — find by process
+    target_hwnds = _claude_hwnds_by_process()
+    if not target_hwnds:
+        return None
+    for w in gw.getAllWindows():
+        try:
+            if int(w._hWnd) in target_hwnds:
+                return w
+        except Exception:
+            continue
     return None
 
 
@@ -215,33 +313,15 @@ def claude_process_running() -> bool:
 
 
 def ensure_claude_open() -> bool:
-    """Launch Claude Code only if no window AND no process is found."""
+    """Return True if a Claude window/process already exists. Never spawn one.
+    Alerts still write to alert_inbox.json and ntfy when no Claude is open."""
     if claude_is_open():
         return True
     if claude_process_running():
-        log.info("Claude process is running but window not found — likely minimized "
-                 "or on another virtual desktop. Skipping launch to avoid duplicate.")
+        log.info("Claude process is running but window not found — skipping inject "
+                 "(window may be minimized or on another desktop).")
         return True
-    if not CLAUDE_EXE or not Path(CLAUDE_EXE).exists():
-        log.warning(f"CLAUDE_EXE not found at {CLAUDE_EXE!r}. "
-                    "Set CLAUDE_EXE env var to your claude launcher path.")
-        return False
-    log.info("Claude window not found and no claude process detected — launching Claude Code...")
-    try:
-        subprocess.Popen(
-            ["cmd.exe", "/k", CLAUDE_EXE],
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-        )
-    except Exception as e:
-        log.error(f"Failed to launch Claude: {e}")
-        return False
-    for _ in range(CLAUDE_LAUNCH_WAIT * 2):
-        time.sleep(0.5)
-        if claude_is_open():
-            log.info("Claude window found.")
-            time.sleep(3)
-            return True
-    log.warning("Claude window did not appear after launch.")
+    log.info("No Claude window/process detected — skipping inject (auto-launch disabled).")
     return False
 
 
@@ -556,6 +636,49 @@ def parse_pt_change_pct(title: str) -> float:
     return abs((a - b) / min(a, b) * 100)
 
 
+# Rating-awareness for UPGRADE/DOWNGRADE catalysts.
+# Pure PT changes with a maintained Neutral/Underweight rating are filler —
+# only fire T1 when the rating signal aligns with the catalyst direction.
+_BULLISH_RATINGS = ("strong buy", "buy", "overweight", "outperform", "positive")
+_BEARISH_RATINGS = ("strong sell", "sell", "underweight", "underperform", "reduce", "negative")
+_NEUTRAL_RATINGS = ("neutral", "hold", "market perform", "market-perform",
+                    "equal weight", "equal-weight", "equalweight", "sector perform",
+                    "perform", "in-line", "in line", "peer perform")
+
+
+def _classify_rating(text: str) -> str:
+    """Return 'bullish' / 'bearish' / 'neutral' / 'unknown' from a title/preview."""
+    t = (text or "").lower()
+    for r in _BULLISH_RATINGS:
+        if r in t:
+            return "bullish"
+    for r in _BEARISH_RATINGS:
+        if r in t:
+            return "bearish"
+    for r in _NEUTRAL_RATINGS:
+        if r in t:
+            return "neutral"
+    return "unknown"
+
+
+def _is_rating_change(text: str) -> bool:
+    """True when the headline indicates an actual rating change (not just PT)."""
+    t = (text or "").lower()
+    # Patterns like "upgraded to Buy from Neutral", "downgrades X to Sell",
+    # "X to Outperform from Neutral", "Daiwa upgrade X to Outperform"
+    if re.search(r"\b(upgrade[sd]?|downgrade[sd]?)\b", t):
+        # "price target raised/lowered" alone isn't a rating change; require
+        # explicit upgrade/downgrade word AND no "keeps/maintains/reiterates"
+        if re.search(r"\bkeeps?\b|\bmaintain[s]?\b|\breiterat", t):
+            return False
+        return True
+    if re.search(r"\bto (buy|sell|overweight|underweight|outperform|underperform)\b "
+                 r"from \b(neutral|hold|market perform|equal weight|sector perform|buy|sell|"
+                 r"overweight|underweight|outperform|underperform)\b", t):
+        return True
+    return False
+
+
 def active_alert_tickers() -> set:
     tickers = set()
     try:
@@ -576,14 +699,37 @@ def is_after_hours(pub: str) -> bool:
         return False
 
 
-def get_news_tier(ticker: str, catalyst: str, title: str, pub: str, active_set: set) -> int:
+def get_news_tier(ticker: str, catalyst: str, title: str, pub: str,
+                  active_set: set, preview: str = "") -> int:
     if ticker in active_set:
         return 1
     if catalyst in ("ACQUISITION", "FDA", "WARNING"):
         return 1
     if catalyst in ("UPGRADE", "DOWNGRADE"):
-        if parse_pt_change_pct(title) >= LARGE_PT_CHANGE_PCT:
+        text = f"{title} {preview}"
+        # Real rating change always fires T1
+        if _is_rating_change(text):
             return 1
+        rating = _classify_rating(text)
+        aligned = (
+            (catalyst == "UPGRADE"   and rating == "bullish") or
+            (catalyst == "DOWNGRADE" and rating == "bearish")
+        )
+        if not aligned:
+            return 2  # Neutral/contradicted-rating PT shuffles → digest
+        # Aligned rating: 20% PT change is enough (lower than the unaligned 25%
+        # bar because the rating + direction confirm the signal).
+        pt_change = parse_pt_change_pct(title)
+        if pt_change >= 20.0:
+            return 1
+        # PT not numerically parseable (e.g. "raised to $114" with no anchor).
+        # If the headline still uses a directional verb, treat as T1 since the
+        # rating is aligned.
+        if pt_change == 0.0 and re.search(
+            r"\b(raised|lifted|increased|lowered|cut|reduced)\b", title.lower()
+        ):
+            return 1
+        return 2
     if catalyst in ("BEAT", "MISS") and is_after_hours(pub):
         return 1
     return 2
@@ -662,7 +808,7 @@ def check_news(news_seen: set, cache: dict, batch_offset: int, digest_pending: l
                 age_hours = 999
             if not should_inject(catalyst, age_hours):
                 continue
-            tier = get_news_tier(ticker, catalyst, title, pub_raw, active_set)
+            tier = get_news_tier(ticker, catalyst, title, pub_raw, active_set, preview)
             if tier == 1:
                 sep = "=" * 48
                 inject_to_claude(
