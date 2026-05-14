@@ -439,6 +439,53 @@ def scan_futures_rsi2(
 
 
 @mcp.tool()
+def warmup_yfinance(force: bool = False) -> dict:
+    """Pre-warm yfinance HTTP session — fire once at start of session for fast
+    follow-up scan_orb_mnq calls. Idempotent within 60s unless force=True.
+    """
+    return scanners.warmup_yfinance(force=force)
+
+
+@mcp.tool()
+def orb_breadth_check(date_et: str | None = None, window: str = "breakout") -> dict:
+    """Mega-cap breadth at OR window or breakout bar (Phase 3.6 soft signal).
+    Pulls 8 NQ-100 mega-caps (AAPL/NVDA/MSFT/AMZN/META/GOOGL/TSLA/AVGO) and counts
+    directional confirmation. 5+/8 confirming at the breakout bar correlated with
+    ORB failures in 60d exploratory sample. NOT a hard skip — informational.
+    window: 'or' (09:30 ET bar) or 'breakout' (09:45 ET bar).
+    """
+    return scanners.orb_breadth_check(date_et=date_et, window=window)
+
+
+@mcp.tool()
+def manage_orb_trail(
+    entry_time_et: str | None = None,
+    current_stop: float | None = None,
+) -> dict:
+    """Given an open MNQ position, compute the 25pt trailing-stop level (Phase 3.6).
+    Tracks MFE since entry, recommends new stop level. Pass current_stop to get
+    explicit tighten/hold instruction. entry_time_et defaults to today's 09:45 ET.
+    """
+    return scanners.manage_orb_trail(entry_time_et=entry_time_et, current_stop=current_stop)
+
+
+@mcp.tool()
+def scan_orb_mnq() -> dict:
+    """MNQ Opening Range Breakout scanner (Phase 3.6). Call any time during
+    the trading day; returns current state of today's setup. Validated on 2y of
+    real 15m MNQ data: PF 1.93 with 25pt trail, $5,500/yr at 1 contract, max DD $558,
+    profitable in every year tested (2024/2025/2026 YTD).
+
+    States: pre_or | or_forming | or_set | long_trigger | short_trigger |
+    window_closed_no_signal | skipped_vix_deadzone | off_session.
+
+    When a trigger fires, returns entry_price_expected + init_stop + trail rule +
+    explicit instructions. Does NOT auto-fire orders.
+    """
+    return scanners.scan_orb_mnq()
+
+
+@mcp.tool()
 def list_futures_accounts() -> dict:
     """List RH futures accounts (separate UUID from regular stock account number).
     Each account ID is needed as scope for positions/orders endpoints.

@@ -150,6 +150,91 @@ def scan_futures_rsi2(
         return {"success": False, "error": f"scan_futures_rsi2 failed: {e}"}
 
 
+def warmup_yfinance(force: bool = False) -> dict:
+    """Pre-warm the yfinance session (DNS + TLS + Yahoo server cache) so the
+    next data call is fast. Idempotent within 60s unless force=True.
+    """
+    from rh_mcp.analysis import yf_warmup
+    try:
+        return yf_warmup.warmup(force=force)
+    except Exception as e:
+        return {"success": False, "error": f"warmup_yfinance failed: {e}"}
+
+
+def orb_breadth_check(date_et: str | None = None, window: str = "breakout") -> dict:
+    """Mega-cap breadth at OR window or breakout bar — pulls 8 NQ-100 mega-caps
+    from massive.com and counts directional confirmation.
+
+    Args:
+      date_et: 'YYYY-MM-DD' (default today ET)
+      window: 'or' (09:30 ET bar) or 'breakout' (09:45 ET bar)
+
+    Soft signal: 5+/8 confirming at the breakout bar correlated with ORB
+    failures in a 60d exploratory sample (NOT statistically validated, treat
+    as informational alongside a trigger).
+    """
+    from rh_mcp.analysis import orb_breadth
+    try:
+        return orb_breadth.get_breadth(date_et=date_et, window=window)
+    except Exception as e:
+        return {"success": False, "error": f"orb_breadth_check failed: {e}"}
+
+
+def manage_orb_trail(
+    entry_time_et: str | None = None,
+    current_stop: float | None = None,
+) -> dict:
+    """Given an open MNQ futures position, compute the recommended 25-point
+    trailing-stop level (the Phase 3.6 ORB management rule).
+
+    Method: track max favorable excursion (MFE) since entry from 15m bars,
+    trail stop at MFE - 25pt (long) or MFE + 25pt (short). Never widens past
+    the initial 50pt stop floor. If current_stop is supplied, recommends
+    'tighten' or 'no_change' with explicit delta in points + dollars.
+
+    Args:
+      entry_time_et: ISO timestamp of entry. Defaults to today's 09:45 ET
+        (the standard ORB entry time).
+      current_stop: Your current broker-side stop. Optional — if provided,
+        the response tells you whether to update it.
+
+    Returns position state + recommended_stop + action instructions.
+    """
+    from rh_mcp.analysis import orb_trail
+    try:
+        return orb_trail.analyze(entry_time_et=entry_time_et, current_stop=current_stop)
+    except Exception as e:
+        return {"success": False, "error": f"manage_orb_trail failed: {e}"}
+
+
+def scan_orb_mnq() -> dict:
+    """MNQ Opening Range Breakout scanner (Phase 3.6). Returns current state of
+    today's setup: pre_or / or_forming / or_set / long_trigger / short_trigger /
+    window_closed_no_signal / skipped_vix_deadzone.
+
+    Validated on 2y real data (505 sessions, 345 trades):
+      PF 1.93 with 25pt trailing stop, $5,500/yr expected at 1 contract,
+      max DD $558, profitable in 2024 / 2025 (chop) / 2026 YTD.
+
+    Spec:
+      OR = 09:30-09:45 ET 15m bar high/low
+      LONG  on 09:45-11:00 bar CLOSE above OR_high → enter next bar open
+      SHORT on 09:45-11:00 bar CLOSE below OR_low  → enter next bar open
+      Filter: skip if prior-day VIX in [18, 22] dead zone
+      Stop: 50pt initial ($100 risk), 25pt trail from MFE
+      Exit: 16:00 ET market-on-close or trail/stop hit, whichever first
+      Size: 1 base contract; +1 if prior-day VIX > 28
+
+    Does NOT auto-fire orders — call to see signal, then user executes via
+    place_futures_order if signal is actionable.
+    """
+    from rh_mcp.analysis import orb_mnq
+    try:
+        return orb_mnq.analyze()
+    except Exception as e:
+        return {"success": False, "error": f"scan_orb_mnq failed: {e}"}
+
+
 def list_futures_accounts() -> dict:
     """List RH futures accounts on this user (separate from regular stock account).
     Returns the futures account UUIDs needed for positions/orders endpoints.
