@@ -9,6 +9,7 @@ Or via the installed entrypoint:
 
 from mcp.server.fastmcp import FastMCP
 
+from rh_mcp import auth
 from rh_mcp.tools import (
     quotes, account, orders, shorting, notifications, scanners,
     alerts, analysis, trade_log, sizing, pipeline,
@@ -20,28 +21,46 @@ mcp = FastMCP("rh-mcp")
 
 
 # ---------------------------------------------------------------------------
+# Auth maintenance
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def force_relogin() -> dict:
+    """Force a fresh Robinhood login. Call this when stock-side tools start
+    returning empty results (the silent symptom of an expired RH token).
+    Deletes the persisted session pickle and re-authenticates. Futures tools
+    are unaffected since they use a separate bearer-token path.
+    """
+    return auth.force_relogin()
+
+
+# ---------------------------------------------------------------------------
 # Account & portfolio
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def get_portfolio(account_number: str | None = None) -> dict:
     """Portfolio summary: equity, cash, buying power, position count, top holdings."""
     return account.get_portfolio(account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_positions(account_number: str | None = None) -> dict:
     """Open stock positions with quantity, avg cost, current price, P&L."""
     return account.get_positions(account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_open_orders(account_number: str | None = None) -> dict:
     """All pending stock orders."""
     return account.get_open_orders(account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_option_positions(account_number: str | None = None) -> dict:
     """All open option contract positions: ticker, expiry, strike, type,
     contracts held, avg cost, mark, P&L. The portfolio summary's
@@ -52,6 +71,7 @@ def get_option_positions(account_number: str | None = None) -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_open_option_orders(account_number: str | None = None) -> dict:
     """All pending option orders (single-leg and multi-leg spreads). Each
     leg is enriched with strike/expiry/option_type so you can read the
@@ -95,12 +115,14 @@ def get_portfolio_history(span: str = "year", interval: str = "day", bounds: str
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def get_quote(tickers: str) -> dict:
     """Current quote(s) for one or batched tickers (comma-separated). Includes AH price."""
     return quotes.get_quote(tickers)
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_latest_price(ticker: str) -> dict:
     """Fast single-ticker last-price lookup. Lighter than get_quote."""
     return quotes.get_latest_price(ticker)
@@ -113,6 +135,7 @@ def get_bars(ticker: str, interval: str = "5minute", span: str = "day") -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_market_hours(date: str | None = None) -> dict:
     """NYSE market hours for a date (YYYY-MM-DD). Omit for today."""
     return quotes.get_market_hours(date)
@@ -123,24 +146,28 @@ def get_market_hours(date: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def place_long(ticker: str, quantity: float, limit_price: float, account_number: str | None = None, time_in_force: str = "gfd", extended_hours: bool = False) -> dict:
     """Buy limit order. time_in_force: 'gfd' (day) or 'gtc'. extended_hours for AH."""
     return orders.place_long(ticker, quantity, limit_price, account_number, time_in_force, extended_hours)
 
 
 @mcp.tool()
+@auth.auth_retry
 def place_short(ticker: str, quantity: float, limit_price: float, account_number: str | None = None, time_in_force: str = "gfd") -> dict:
     """Sell-short limit order. Check shortable + borrow fee first via check_short_availability."""
     return orders.place_short(ticker, quantity, limit_price, account_number, time_in_force)
 
 
 @mcp.tool()
+@auth.auth_retry
 def close_position(ticker: str, quantity: float | None = None, limit_price: float | None = None, account_number: str | None = None) -> dict:
     """Close a long position. Omit quantity to close all. Omit limit_price for aggressive bid - $0.05."""
     return orders.close_position(ticker, quantity, limit_price, account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def close_all(ticker: str, account_number: str | None = None) -> dict:
     """Close the FULL position including any fractional residual. Splits into whole-share limit + fractional market orders. Returns both order IDs."""
     return orders.close_all(ticker, account_number)
@@ -151,48 +178,56 @@ def close_all(ticker: str, account_number: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def set_trailing_stop(ticker: str, quantity: float, trail_amount: float, trail_type: str = "percentage", time_in_force: str = "gtc") -> dict:
     """Native Robinhood trailing stop SELL order. trail_type='percentage' (3.0=3%) or 'price' ($). Survives chain failures."""
     return orders.set_trailing_stop(ticker, quantity, trail_amount, trail_type, time_in_force)
 
 
 @mcp.tool()
+@auth.auth_retry
 def set_stop_loss(ticker: str, quantity: float, stop_price: float, time_in_force: str = "gtc", account_number: str | None = None) -> dict:
     """Native fixed stop-loss SELL order at a specific price."""
     return orders.set_stop_loss(ticker, quantity, stop_price, time_in_force, account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def place_with_trailing_stop(ticker: str, quantity: float, limit_price: float, trail_percent: float = 3.0, account_number: str | None = None, extended_hours: bool = False, fill_timeout_sec: int = 60) -> dict:
     """ATOMIC: buy limit + native trailing stop in one call. Eliminates the fill-to-stop gap."""
     return orders.place_with_trailing_stop(ticker, quantity, limit_price, trail_percent, account_number, extended_hours, fill_timeout_sec)
 
 
 @mcp.tool()
+@auth.auth_retry
 def place_with_stop(ticker: str, quantity: float, limit_price: float, stop_price: float, account_number: str | None = None, extended_hours: bool = False, fill_timeout_sec: int = 60) -> dict:
     """ATOMIC: buy limit + native fixed stop-loss in one call. For trailing stops use place_with_trailing_stop. (RH does not support true OCO; take-profit is handled via partial-exit framework, not a paired order.)"""
     return orders.place_with_stop(ticker, quantity, limit_price, stop_price, account_number, extended_hours, fill_timeout_sec)
 
 
 @mcp.tool()
+@auth.auth_retry
 def flatten_position(ticker: str, limit_price: float | None = None, account_number: str | None = None) -> dict:
     """ATOMIC full exit: cancel all open sell-side orders for ticker (stops, trails, limits), then sell remaining shares. Use when you want to fully close a stop-protected position."""
     return orders.flatten_position(ticker, limit_price, account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def partial_with_trail_rearm(ticker: str, partial_quantity: float, exit_limit_price: float | None = None, trail_percent: float = 3.0, account_number: str | None = None, fill_timeout_sec: int = 60) -> dict:
     """ATOMIC +2R partial exit: cancel existing trail/stop, sell partial, re-set trailing stop on remainder. Required because RH locks shares to the first sell-side order."""
     return orders.partial_with_trail_rearm(ticker, partial_quantity, exit_limit_price, trail_percent, account_number, fill_timeout_sec)
 
 
 @mcp.tool()
+@auth.auth_retry
 def cover_short(ticker: str, quantity: float, limit_price: float | None = None, cancel_existing: bool = True, account_number: str | None = None) -> dict:
     """ATOMIC short cover: cancel buy-side orders for ticker, then BUY to close. Defaults to market BUY (matches RH app)."""
     return orders.cover_short(ticker, quantity, limit_price, cancel_existing, account_number)
 
 
 @mcp.tool()
+@auth.auth_retry
 def adjust_trailing_stop(ticker: str, new_trail_percent: float, account_number: str | None = None) -> dict:
     """Tighten/loosen the trailing stop on an existing long position. Cancels current trail, re-sets at new percentage."""
     return orders.adjust_trailing_stop(ticker, new_trail_percent, account_number)
@@ -203,12 +238,14 @@ def adjust_trailing_stop(ticker: str, new_trail_percent: float, account_number: 
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def cancel_order(order_id: str) -> dict:
     """Cancel a specific open order. Auto-detects stock vs option from the ID."""
     return orders.cancel_order(order_id)
 
 
 @mcp.tool()
+@auth.auth_retry
 def cancel_option_order(order_id: str) -> dict:
     """Cancel a specific open OPTION order. Explicit alternative to
     cancel_order's auto-dispatch — skips the stock-first probe.
@@ -217,6 +254,7 @@ def cancel_option_order(order_id: str) -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def cancel_all_orders(account_number: str | None = None) -> dict:
     """Cancel ALL open orders — both stock and option. Use with caution."""
     return orders.cancel_all_orders(account_number)
@@ -255,6 +293,7 @@ def get_option_order_status(order_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def check_short_availability(ticker: str) -> dict:
     """Shortable + borrow fee + float/SI data. Call before place_short."""
     return shorting.check_short_availability(ticker)
@@ -271,18 +310,21 @@ def get_notifications(count: int = 20) -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_watchlists() -> dict:
     """List Robinhood watchlists."""
     return notifications.get_watchlists()
 
 
 @mcp.tool()
+@auth.auth_retry
 def add_to_watchlist(watchlist_name: str, ticker: str) -> dict:
     """Add a ticker to a named watchlist."""
     return notifications.add_to_watchlist(watchlist_name, ticker)
 
 
 @mcp.tool()
+@auth.auth_retry
 def remove_from_watchlist(watchlist_name: str, ticker: str) -> dict:
     """Remove a ticker from a named watchlist."""
     return notifications.remove_from_watchlist(watchlist_name, ticker)
@@ -299,12 +341,14 @@ def top_movers(direction: str = "up", scope: str = "sp500") -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_news(ticker: str, count: int = 10) -> dict:
     """Recent news headlines for a ticker."""
     return scanners.get_news(ticker, count)
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_earnings(ticker: str) -> dict:
     """Earnings history + next earnings date."""
     return scanners.get_earnings(ticker)
@@ -317,6 +361,7 @@ def get_portfolio_earnings(account_number: str | None = None, warn_within_days: 
 
 
 @mcp.tool()
+@auth.auth_retry
 def get_fundamentals(ticker: str) -> dict:
     """Fundamentals: market cap, float, short interest, P/E, 52w range, sector."""
     return scanners.get_fundamentals(ticker)
@@ -413,9 +458,11 @@ def scan_unusual_oi(
 
 @mcp.tool()
 def get_futures_quote(ticker: str) -> dict:
-    """Get current quote for an RH futures contract (e.g. 'MNQM26', 'ESM26').
-    Returns bid/ask/last/spread. Ticker must be in UUID cache (register via
-    register_futures_uuid first — UUIDs come from RH web app network inspection).
+    """Get current quote for an RH futures contract.
+    Accepts: root ('MNQ', 'ES', 'GC', ...) auto-resolves to active front month;
+    full dated ticker ('MNQM26'); or contract UUID. Roots resolve via the
+    /marketdata/futures/quotes/v1/ endpoint and persist to ~/.rh_futures_uuids.json
+    on first lookup — no manual register_futures_uuid step needed.
     """
     return scanners.get_futures_quote(ticker)
 
@@ -470,6 +517,20 @@ def manage_orb_trail(
 
 
 @mcp.tool()
+def scan_orb_futures(root: str = "MNQ") -> dict:
+    """ORB scanner for any CME equity-index root (MNQ, MES, NQ, ES, RTY, M2K).
+    Same state machine and rules as scan_orb_mnq, just parameterized for
+    different instruments. Stop/trail points are pre-tuned per instrument for
+    similar dollar risk.
+
+    Tiers: MNQ = A (validated PF 1.93, 2y backtest). All others = BETA — same
+    pattern but per-root backtest is pending (task #19). Use validated=True
+    flag on response to gate live trading.
+    """
+    return scanners.scan_orb_futures(root=root)
+
+
+@mcp.tool()
 def scan_orb_mnq() -> dict:
     """MNQ Opening Range Breakout scanner (Phase 3.6). Call any time during
     the trading day; returns current state of today's setup. Validated on 2y of
@@ -483,6 +544,25 @@ def scan_orb_mnq() -> dict:
     explicit instructions. Does NOT auto-fire orders.
     """
     return scanners.scan_orb_mnq()
+
+
+@mcp.tool()
+def scan_mnq_cvd() -> dict:
+    """MNQ CVD divergence scanner. Reads MNQ tape state captured by NT8's
+    TC_CVDExporter indicator (NT8 acts as data feed; trading still happens on RH).
+
+    Detects:
+      - bearish_divergence: price HH but CVD LH (buyers absorbed -> reversal risk)
+      - bullish_divergence: price LL but CVD HL (sellers absorbed -> reversal risk)
+      - absorption_buy:     heavy buy volume in current bar with no price advance
+      - absorption_sell:    heavy sell volume in current bar with no price decline
+
+    Returns bias call + action suggestion. Use during ORB / RSI(2) trade
+    management to spot exhaustion before price confirms. Requires NT8 to be
+    open with TC_CVDExporter loaded on a 15m MNQ chart; flags stale=True if
+    the local state file hasn't refreshed in >90s.
+    """
+    return scanners.scan_mnq_cvd()
 
 
 @mcp.tool()
@@ -523,17 +603,19 @@ def cancel_futures_order(order_id: str, account_id: str | None = None) -> dict:
 
 
 @mcp.tool()
-def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
+def flatten_futures_position(contract: str, account_id: str | None = None) -> dict:
     """EMERGENCY CLOSE a futures position via market order. RH auto-determines
     side and quantity from current position. Fills at whatever price the book offers.
     For orderly exits prefer place_futures_order with LIMIT.
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID.
     """
-    return scanners.flatten_futures_position(contract_uuid=contract_uuid, account_id=account_id)
+    return scanners.flatten_futures_position(contract=contract, account_id=account_id)
 
 
 @mcp.tool()
 def place_futures_order(
-    contract_uuid: str,
+    contract: str,
     side: str,
     quantity: int = 1,
     order_type: str = "LIMIT",
@@ -545,16 +627,185 @@ def place_futures_order(
 ) -> dict:
     """PLACES A REAL FUTURES ORDER ON ROBINHOOD.
 
+    contract: any of:
+      - root ('MNQ', 'ES', 'MES', 'GC', ...) → auto-resolves to active front month
+      - full ticker ('MNQM26', 'ESU26', ...) → cache lookup
+      - contract UUID (legacy)
+
     side: 'BUY' or 'SELL'. order_type: 'LIMIT' (default) or 'MARKET'.
     MARKET orders require accept_market_risk=True. time_in_force: 'GFD' or 'GTC'.
-    Returns http_status + the order response with derivedState (REJECTED, CONFIRMED, FILLED).
-    Each call generates unique refId — RH dedupes accidental double-submits.
+    Returns http_status + the order response with derivedState (REJECTED, CONFIRMED, FILLED),
+    plus contract_input + resolved_contract_uuid so the caller can verify which
+    contract actually got hit. Each call generates unique refId — RH dedupes
+    accidental double-submits.
     """
     return scanners.place_futures_order(
-        contract_uuid=contract_uuid, side=side, quantity=quantity,
+        contract=contract, side=side, quantity=quantity,
         order_type=order_type, limit_price=limit_price, stop_price=stop_price,
         time_in_force=time_in_force, account_id=account_id,
         accept_market_risk=accept_market_risk,
+    )
+
+
+@mcp.tool()
+def get_futures_ladder(
+    contract: str,
+    levels: int = 10,
+    duration_sec: float = 3.0,
+    source: str = "GLBX",
+) -> dict:
+    """Live L2 order book snapshot for a futures contract — the 'Ladder' view.
+
+    Opens a real-time WebSocket subscription to the CME Globex order book via
+    RH's dxFeed feed, collects Order add/modify/delete events for duration_sec
+    (1700+ events/sec for active MNQ), then aggregates the resulting book state
+    by price and returns the top N levels per side.
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID.
+    levels: how many price levels per side (default 10).
+    duration_sec: collect window (default 3s — enough for initial snapshot).
+    source: dxFeed source. 'GLBX' covers all CME Globex products (MNQ, MES, NQ,
+            ES, RTY, M2K and the futures we trade).
+
+    Returns ladder with best_bid, best_ask, mid, spread, bids[], asks[] (each
+    level: {price, size, n_orders}), plus active_orders count.
+    """
+    return scanners.get_futures_ladder(
+        contract=contract, levels=levels,
+        duration_sec=duration_sec, source=source,
+    )
+
+
+@mcp.tool()
+def get_futures_contract_quantity(contract: str, account_id: str | None = None) -> dict:
+    """Held / pending / net quantity for a specific futures contract.
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID. Use to verify
+    actual position size before placing exit orders.
+    """
+    return scanners.get_futures_contract_quantity(contract=contract, account_id=account_id)
+
+
+@mcp.tool()
+def get_futures_order_validation_rules(account_id: str | None = None) -> dict:
+    """Server-side order validation rules for the futures account — max order
+    quantity, etc. Check before placing large/unusual orders to catch caps the
+    server will reject.
+    """
+    return scanners.get_futures_order_validation_rules(account_id=account_id)
+
+
+@mcp.tool()
+def get_futures_order_detail(
+    order_id: str,
+    asset_type: str = "FUTURES",
+    account_number: str = "588784215",
+) -> dict:
+    """Single-order full detail via wormhole /orders/{id}. Richer than the
+    ceres list view (productSymbol, lastDayToTrade, full executions, fees).
+    asset_type: 'FUTURES' (default) / 'EQUITY' / 'OPTION' / 'CRYPTO'.
+    """
+    return scanners.get_futures_order_detail(
+        order_id=order_id, asset_type=asset_type, account_number=account_number,
+    )
+
+
+@mcp.tool()
+def get_recent_orders_unified(account_number: str = "588784215") -> dict:
+    """Recent orders across ALL asset types (stock, options, futures, crypto)
+    in one call. Returns per-asset and per-state breakdowns plus the full rows.
+    Use for a unified 'what's working / what just filled' view.
+    """
+    return scanners.get_recent_orders_unified(account_number=account_number)
+
+
+@mcp.tool()
+def monitor_orb_position(
+    entry_time_et: str | None = None,
+    moc_minute_offset: int = 0,
+    min_tighten_pts: float = 1.0,
+    dry_run: bool = False,
+    account_id: str | None = None,
+) -> dict:
+    """Single-iteration ORB monitor (Phase 3.6 auto-management).
+
+    PERFORMS REAL ORDER ACTIONS unless dry_run=True. Each call:
+      1. Reads open MNQ position + recommended trail stop (via orb_trail logic)
+      2. If past 15:55 ET → flattens position (MOC exit)
+      3. Else if recommended stop is tighter than current → atomic /replace
+      4. Else → no action
+
+    Drive via ScheduleWakeup every 2 minutes once a position is open. The
+    response includes next_wakeup_seconds (None means stop the loop —
+    no_position or moc_exit). Each call is idempotent — a missed wakeup
+    just means the next call catches up.
+
+    States: no_position | hold | tightened | moc_exit | no_open_stop |
+            data_error | action_failed
+
+    Args:
+      entry_time_et: ISO timestamp of entry (defaults to today's 09:45 ET)
+      moc_minute_offset: shift the 15:55 MOC fire by N minutes (testing)
+      min_tighten_pts: skip tightens smaller than this (default 1.0pt = 4 ticks)
+      dry_run: compute action but don't call RH
+    """
+    return scanners.monitor_orb_position(
+        entry_time_et=entry_time_et,
+        moc_minute_offset=moc_minute_offset,
+        min_tighten_pts=min_tighten_pts,
+        dry_run=dry_run,
+        account_id=account_id,
+    )
+
+
+@mcp.tool()
+def place_futures_with_stop(
+    contract: str,
+    side: str,
+    quantity: int = 1,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    stop_distance_points: float | None = None,
+    order_type: str = "LIMIT",
+    time_in_force: str = "GFD",
+    stop_time_in_force: str = "GTC",
+    fill_timeout_sec: float = 60.0,
+    poll_interval_sec: float = 2.0,
+    account_id: str | None = None,
+    accept_market_risk: bool = False,
+) -> dict:
+    """ATOMIC FUTURES BRACKET — places entry, polls until filled, then immediately
+    places opposite-side stop on the filled quantity.
+
+    PLACES REAL ORDERS. Closes the unprotected window between fill and manual
+    stop placement. Use this for any A-grade entry where you want guaranteed
+    stop coverage without depending on a follow-up tool call.
+
+    contract: root ('MNQ', 'ES', ...), full ticker ('MNQM26'), or UUID.
+    side: 'BUY' or 'SELL' for the entry. Stop side is auto-derived (opposite).
+    Specify exactly one of:
+      - stop_price: absolute trigger price
+      - stop_distance_points: distance from fill (e.g. 50 for the Phase 3.6 ORB
+        50-point initial stop). Use this with MARKET entries when fill is unknown.
+
+    Stop is placed as a STOP_MARKET (triggers a market order at stop_price)
+    with stop_time_in_force defaulting to GTC so it survives the session.
+
+    Returns:
+      stage: 'complete' (entry+stop both placed) | 'rejected_entry' |
+             'fill_timeout' (entry working, no stop placed) | 'rejected_stop' |
+             'entry_cancelled' | 'entry_rejected'
+      entry: {order_id, state, fill_price, fill_quantity}
+      stop:  {order_id, stop_price, side, state, response} | None
+    """
+    return scanners.place_futures_with_stop(
+        contract=contract, side=side, quantity=quantity,
+        limit_price=limit_price, stop_price=stop_price,
+        stop_distance_points=stop_distance_points,
+        order_type=order_type, time_in_force=time_in_force,
+        stop_time_in_force=stop_time_in_force,
+        fill_timeout_sec=fill_timeout_sec,
+        poll_interval_sec=poll_interval_sec,
+        account_id=account_id, accept_market_risk=accept_market_risk,
     )
 
 
@@ -579,11 +830,57 @@ def get_futures_history(ticker: str, period: str = "5y", interval: str = "1d") -
 
 @mcp.tool()
 def register_futures_uuid(ticker: str, uuid: str) -> dict:
-    """Persist a futures ticker → contract UUID mapping. Get UUIDs by inspecting
-    RH web app network calls (RH's futures API uses internal UUIDs, not tickers).
+    """Persist a futures ticker → contract UUID mapping.
+
+    For roots in KNOWN_ROOTS (MNQ, NQ, MES, ES, RTY, M2K, YM, MYM, GC, MGC, SI,
+    CL, MCL, NG) you generally don't need this — resolve_futures_contract will
+    auto-discover and persist via the symbol lookup endpoint. Use register_uuid
+    only for non-listed roots or to override a stale resolution.
+
     Cached to ~/.rh_futures_uuids.json so future sessions inherit the mappings.
     """
     return scanners.register_futures_uuid(ticker, uuid)
+
+
+@mcp.tool()
+def resolve_futures_contract(value: str) -> dict:
+    """Resolve any futures input (root, full ticker, or UUID) to a contract UUID
+    plus its current quote. Use to preview which contract place_futures_order
+    will actually hit before placing the order.
+
+    Input examples: 'MNQ' (root → active front month), 'MNQM26' (cached or
+    live-looked-up), or a UUID (returned as-is + quote pulled).
+
+    Returns: {success, input, resolved_uuid, ticker_resolved, symbol, state,
+    bid, ask, last, ...} on hit; {success: False, ...} on miss.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        uuid = fc.resolve_contract_input(value)
+        if not uuid:
+            return {
+                "success": False,
+                "input": value,
+                "error": f"could not resolve {value!r}. Pass a root, full ticker, or UUID.",
+                "known_roots": list(fc.KNOWN_ROOTS),
+            }
+        # Pull a fresh quote for verification
+        raw = fc.get_quotes(uuid)
+        data = (raw.get("data") or [{}])[0]
+        inner = data.get("data") or {}
+        return {
+            "success": True,
+            "input": value,
+            "resolved_uuid": uuid,
+            "symbol": inner.get("symbol"),
+            "state": inner.get("state"),
+            "bid": inner.get("bid_price"),
+            "ask": inner.get("ask_price"),
+            "last": inner.get("last_trade_price"),
+            "updated_at": inner.get("updated_at"),
+        }
+    except Exception as e:
+        return {"success": False, "input": value, "error": str(e)}
 
 
 @mcp.tool()
@@ -1223,6 +1520,7 @@ def stack_grade(tickers: str) -> dict:
 
 
 @mcp.tool()
+@auth.auth_retry
 def order_book_scan(ticker: str, price: float, range_dollars: float | None = None, threshold: int | None = None) -> dict:
     """Order book depth + OBI signal at a target price. Returns spread, walls, BUY/SELL/BALANCED signal."""
     return analysis.order_book_scan(ticker, price, range_dollars, threshold)
@@ -1375,6 +1673,7 @@ def sell_option_to_open(ticker: str, expiry: str, strike: float, option_type: st
 
 
 @mcp.tool()
+@auth.auth_retry
 def close_option_position(ticker: str, expiry: str, strike: float, option_type: str, quantity: int, limit_price: float, side: str = "sell", time_in_force: str = "gtc", account_number: str | None = None) -> dict:
     """Close an existing option position. side='sell' to close a long, 'buy' to close a short."""
     return options_trading.close_option_position(ticker, expiry, strike, option_type, quantity, limit_price, side, time_in_force, account_number)
@@ -1385,6 +1684,7 @@ def close_option_position(ticker: str, expiry: str, strike: float, option_type: 
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@auth.auth_retry
 def place_option_spread(ticker: str, legs: list, quantity: int, limit_price: float, direction: str = "debit", time_in_force: str = "gtc", account_number: str | None = None) -> dict:
     """Universal multi-leg options order. Each leg: {expirationDate, strike, optionType, effect, action}. direction='debit'|'credit'."""
     return options_trading.place_option_spread(ticker, legs, quantity, limit_price, direction, time_in_force, account_number)
