@@ -271,8 +271,16 @@ def force_relogin() -> dict:
 
     try:
         login()
-        # login() now installs the bearer override if RH_STOCK_BEARER_TOKEN is set.
-        bearer_active = bool(os.environ.get("RH_STOCK_BEARER_TOKEN", "").strip())
+        # Check if bearer override actually got installed (env var OR config).
+        # _install_stock_bearer_override() reads both — verify by inspecting
+        # the SESSION header rather than just the env var.
+        bearer_active = False
+        try:
+            from robin_stocks.robinhood import helper as rhh
+            auth_header = rhh.SESSION.headers.get("Authorization", "")
+            bearer_active = auth_header.startswith("Bearer ") and "Bearer " in auth_header
+        except Exception:
+            pass
         return {
             "success": True,
             "message": "Re-authenticated to Robinhood",
