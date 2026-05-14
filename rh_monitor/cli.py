@@ -1100,7 +1100,7 @@ def run():
                     for a in active if a["ticker"] in prices
                 )
                 if status:
-                    log.info(status)
+                    log.debug(status)
         except Exception as e:
             log.error(f"Loop error: {e}")
         time.sleep(POLL_INTERVAL)
