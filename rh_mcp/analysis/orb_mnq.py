@@ -53,14 +53,49 @@ _VIX_CACHE: dict[str, tuple[Optional[float], Optional[str]]] = {}
 VIX_DEAD_LOW = 18.0
 VIX_DEAD_HIGH = 22.0
 VIX_CRISIS = 28.0
-INIT_STOP_POINTS = 50.0
+INIT_STOP_POINTS = 50.0    # legacy MNQ default — see ORB_CONFIG for per-root values
 TRAIL_POINTS = 25.0
-POINT_VALUE_DOLLARS = 2.0  # MNQ: $2/point per contract
+POINT_VALUE_DOLLARS = 2.0  # legacy MNQ default
 
 OR_START_HHMM = (9, 30)
 OR_END_HHMM = (9, 45)
 BREAKOUT_WINDOW_END_HHMM = (11, 0)
 SESSION_END_HHMM = (16, 0)
+
+# Per-instrument ORB config. Stop/trail points are sized for similar dollar
+# risk across the cohort (~$100 on micros, ~$500-1000 on minis).
+# regime_gate="vix": uses VIX dead-zone filter. Non-equity-index instruments
+# would need a different vol index (OVX for oil, GVZ for gold) — not enabled
+# until those gates are validated.
+#
+# 'validated': True only for MNQ (the 2y massive.com backtest). Others are
+# BETA — running on the same pattern but stop/trail are educated guesses
+# until task #19 backtest fills in real values.
+ORB_CONFIG: dict[str, dict] = {
+    "MNQ": {"point_value": 2.0,  "init_stop_pts": 50.0, "trail_pts": 25.0,
+            "regime_gate": "vix", "validated": True,  "tier": "A"},
+    "MES": {"point_value": 5.0,  "init_stop_pts": 20.0, "trail_pts": 10.0,
+            "regime_gate": "vix", "validated": False, "tier": "BETA"},
+    "NQ":  {"point_value": 20.0, "init_stop_pts": 50.0, "trail_pts": 25.0,
+            "regime_gate": "vix", "validated": False, "tier": "BETA"},
+    "ES":  {"point_value": 50.0, "init_stop_pts": 20.0, "trail_pts": 10.0,
+            "regime_gate": "vix", "validated": False, "tier": "BETA"},
+    "RTY": {"point_value": 50.0, "init_stop_pts": 10.0, "trail_pts":  5.0,
+            "regime_gate": "vix", "validated": False, "tier": "BETA"},
+    "M2K": {"point_value": 5.0,  "init_stop_pts": 10.0, "trail_pts":  5.0,
+            "regime_gate": "vix", "validated": False, "tier": "BETA"},
+}
+
+
+def _cfg(root: str) -> dict:
+    """Return ORB_CONFIG entry for root. Raises ValueError if root not supported."""
+    cfg = ORB_CONFIG.get(root.upper())
+    if cfg is None:
+        raise ValueError(
+            f"ORB not configured for root {root!r}. "
+            f"Supported: {list(ORB_CONFIG)}"
+        )
+    return cfg
 
 
 def _now_et() -> datetime:
@@ -124,36 +159,37 @@ def _get_vix_prior_close(now: datetime) -> tuple[Optional[float], Optional[str]]
     return result
 
 
-def _front_month_ticker(now: datetime) -> str:
-    """MNQ front-month code for given date. Rolls ~14th of expiry month.
+def _front_month_ticker(now: datetime, root: str = "MNQ") -> str:
+    """Front-month code for any quarterly-cycle root on given date.
 
-    Quarterly cycle: H(Mar)/M(Jun)/U(Sep)/Z(Dec). Single-digit year per massive.com.
+    Cycle: H(Mar)/M(Jun)/U(Sep)/Z(Dec). Single-digit year (massive.com convention).
+    Rolls ~14th of expiry month.
     """
     d = now.astimezone(ET)
     y = d.year % 10
     m, day = d.month, d.day
-    # Pick next quarterly that we haven't rolled out of yet
+    root = root.upper()
     if (m, day) < (3, 14):
-        return f"MNQH{y}"
+        return f"{root}H{y}"
     if (m, day) < (6, 14):
-        return f"MNQM{y}"
+        return f"{root}M{y}"
     if (m, day) < (9, 14):
-        return f"MNQU{y}"
+        return f"{root}U{y}"
     if (m, day) < (12, 14):
-        return f"MNQZ{y}"
-    return f"MNQH{(y + 1) % 10}"  # roll to next year's H
+        return f"{root}Z{y}"
+    return f"{root}H{(y + 1) % 10}"
 
 
-def _get_mnq_intraday_massive(now: datetime) -> list[dict] | None:
-    """Pull recent 15-min MNQ bars from massive.com. <1s typically. Returns None on
-    any failure (caller falls back to yfinance).
+def _get_mnq_intraday_massive(now: datetime, root: str = "MNQ") -> list[dict] | None:
+    """Pull recent 15-min bars from massive.com for any CME equity-index root.
+    <1s typically. Returns None on any failure.
     """
     import os, urllib.request, json
     try:
         key = open(os.path.expanduser("~/.marketdata_api_key")).read().strip()
     except Exception:
         return None
-    ticker = _front_month_ticker(now)
+    ticker = _front_month_ticker(now, root=root)
     # Pull last ~3 trading days. lte=today+1 because massive.com interprets a
     # bare YYYY-MM-DD as start-of-day UTC — using today excludes today's bars.
     today = now.astimezone(ET).date()
@@ -186,9 +222,9 @@ def _get_mnq_intraday_massive(now: datetime) -> list[dict] | None:
     return bars or None
 
 
-def _get_mnq_intraday(now: datetime) -> list[dict] | None:
-    """Pull recent 15-min MNQ bars from massive.com (typically <1s)."""
-    return _get_mnq_intraday_massive(now)
+def _get_mnq_intraday(now: datetime, root: str = "MNQ") -> list[dict] | None:
+    """Pull recent 15-min bars from massive.com for the given root (typically <1s)."""
+    return _get_mnq_intraday_massive(now, root=root)
 
 
 def _bars_for_today(bars: list[dict], ref: datetime) -> list[dict]:
@@ -266,26 +302,176 @@ def _breadth_warning(date_iso: str, direction: str) -> dict:
         return {"available": False, "reason": str(e)}
 
 
-def _compute_size(prior_vix: float | None) -> dict:
-    """Position size guidance based on VIX regime."""
+def _compute_size(prior_vix: float | None, root: str = "MNQ") -> dict:
+    """Position size guidance based on VIX regime — per-instrument $ scaling."""
+    cfg = _cfg(root)
+    init_stop_pts = cfg["init_stop_pts"]
+    point_value = cfg["point_value"]
     if prior_vix is not None and prior_vix > VIX_CRISIS:
         return {
             "contracts": 2,
             "rationale": f"VIX prior close {prior_vix:.1f} > {VIX_CRISIS} (crisis stack +1)",
-            "max_risk_dollars": 2 * INIT_STOP_POINTS * POINT_VALUE_DOLLARS,
+            "max_risk_dollars": 2 * init_stop_pts * point_value,
         }
     return {
         "contracts": 1,
         "rationale": "base size (no VIX-crisis stack)",
-        "max_risk_dollars": 1 * INIT_STOP_POINTS * POINT_VALUE_DOLLARS,
+        "max_risk_dollars": 1 * init_stop_pts * point_value,
     }
 
 
-def analyze(now: datetime | None = None) -> dict:
-    """Return current ORB state and any active signal. Safe to call any time of day.
+def _try_live_state(root: str, ref: datetime, stale_secs: int = 30) -> dict | None:
+    """Read ~/orb_live_state.json and translate to scan_orb_mnq response format.
 
-    Optional `now` for backtesting/inspection — defaults to real current ET time.
+    Returns None if state file doesn't exist, is for a different date, is for
+    a different root, or hasn't been ticked recently. Caller falls back to
+    massive.com when this returns None.
+
+    The live tracker (rh_mcp.analysis.orb_live_tracker) writes this file via
+    RH-live polling — same data RH's app sees, no yfinance/massive.com lag.
     """
+    import json as _json
+    from rh_mcp.analysis.orb_live_tracker import STATE_PATH
+    if not STATE_PATH.exists():
+        return None
+    try:
+        live = _json.loads(STATE_PATH.read_text())
+    except Exception:
+        return None
+    today_iso = ref.astimezone(ET).date().isoformat()
+    if live.get("date") != today_iso:
+        return None
+    if (live.get("root") or "").upper() != root.upper():
+        return None
+    # Stale check: tracker should be writing every POLL_SECS (~5s)
+    last_tick = live.get("last_tick_ts_et")
+    if not last_tick:
+        return None
+    try:
+        last_tick_dt = datetime.fromisoformat(last_tick).astimezone(ET)
+    except Exception:
+        return None
+    if (ref - last_tick_dt).total_seconds() > stale_secs:
+        return None
+    return live
+
+
+def _render_live_response(live: dict, ref: datetime, root: str, prior_vix: float,
+                          vix_date: str | None) -> dict:
+    """Translate live tracker state to the existing analyze() response shape.
+    Adds 'source': 'rh_live' so callers can distinguish from massive.com path.
+    """
+    cfg = _cfg(root)
+    init_stop_pts = cfg["init_stop_pts"]
+    trail_pts = cfg["trail_pts"]
+    point_value = cfg["point_value"]
+
+    common = {
+        "success": True,
+        "root": root,
+        "tier": cfg["tier"],
+        "validated": cfg["validated"],
+        "source": "rh_live",
+        "as_of_et": ref.isoformat(timespec="seconds"),
+        "prior_vix": round(prior_vix, 2),
+        "vix_as_of": vix_date,
+        "or_high": live.get("or_high"),
+        "or_low": live.get("or_low"),
+        "or_width_pts": round((live.get("or_high") or 0) - (live.get("or_low") or 0), 2)
+                        if (live.get("or_high") and live.get("or_low")) else None,
+        "current_price": live.get("last_tick_price"),
+        "size_guidance": _compute_size(prior_vix, root=root),
+    }
+    state = live.get("session_state", "pre_or")
+
+    if state in ("long_trigger", "short_trigger"):
+        bk = live.get("breakout") or {}
+        direction = bk.get("direction", state.split("_")[0])
+        entry = bk.get("entry_price_expected")
+        init_stop = bk.get("init_stop")
+        breakout_close = bk.get("bar_close_price")
+        breakout_time = bk.get("bar_close_time_et")
+        if entry is not None:
+            instructions = [
+                f"Place MARKET {direction.upper()} for {root} at {entry:.2f} "
+                f"({common['size_guidance']['contracts']} contracts)",
+                f"Stop-market at {init_stop:.2f} ({init_stop_pts} pts = "
+                f"${init_stop_pts * point_value:.0f} risk per contract)",
+                f"Begin {trail_pts}pt trailing-stop logic: as price moves favorably, "
+                f"raise stop to (MFE - {trail_pts}pts)",
+                "Time exit: market-on-close at 16:00 ET if not stopped first",
+            ]
+            return {
+                **common,
+                "state": state,
+                "breakout_bar_et": breakout_time,
+                "breakout_bar_close": breakout_close,
+                "entry_price_expected": round(entry, 2),
+                "init_stop": round(init_stop, 2),
+                "trail_stop_distance_pts": trail_pts,
+                "max_loss_per_contract_dollars": init_stop_pts * point_value,
+                "instructions": instructions,
+            }
+        # Trigger fired but entry-bar OPEN not yet captured (tracker between ticks)
+        return {
+            **common,
+            "state": f"{direction}_trigger_pending_entry",
+            "breakout_bar_et": breakout_time,
+            "breakout_bar_close": breakout_close,
+            "next_action": "Breakout confirmed. Entry price = open of next bar — "
+                          "tracker will populate on next tick (<5s).",
+        }
+
+    if state == "or_forming":
+        cb = live.get("current_bar") or {}
+        return {
+            **common,
+            "state": "or_forming",
+            "or_bar_partial": {
+                "open": cb.get("open"),
+                "running_high": cb.get("high"),
+                "running_low": cb.get("low"),
+            },
+            "next_action": "OR completes at 09:45 ET",
+        }
+
+    if state == "or_set":
+        return {
+            **common,
+            "state": "or_set",
+            "next_action": f"Watching 15m closes for break above "
+                          f"{common['or_high']:.2f} or below {common['or_low']:.2f} until 11:00 ET",
+        }
+
+    if state == "window_closed_no_signal":
+        return {
+            **common,
+            "state": "window_closed_no_signal",
+            "reason": "No 15m bar in 09:45-11:00 ET window closed beyond OR — no trade today",
+        }
+
+    # pre_or, complete, or other states
+    return {
+        **common,
+        "state": state,
+    }
+
+
+def analyze(now: datetime | None = None, root: str = "MNQ") -> dict:
+    """Return current ORB state and any active signal for the given root.
+
+    Default root='MNQ' keeps backward compat. Pass MES/NQ/ES/RTY/M2K to scan
+    those instruments — uses ORB_CONFIG[root] for stop/trail/point_value.
+
+    Data source priority:
+      1. ~/orb_live_state.json (RH-live tracker, preferred) — no lag, exact bars
+      2. massive.com 15-min aggregates (fallback) — historical-style, ~1-3min lag
+    """
+    cfg = _cfg(root)
+    init_stop_pts = cfg["init_stop_pts"]
+    trail_pts = cfg["trail_pts"]
+    point_value = cfg["point_value"]
+
     ref = (now or _now_et()).astimezone(ET)
     today = ref.date()
 
@@ -294,6 +480,7 @@ def analyze(now: datetime | None = None) -> dict:
         return {
             "success": True,
             "state": "off_session",
+            "root": root,
             "as_of_et": ref.isoformat(timespec="seconds"),
             "reason": "weekend",
         }
@@ -318,6 +505,14 @@ def analyze(now: datetime | None = None) -> dict:
             "reason": f"prior VIX {prior_vix:.2f} is in dead zone [{VIX_DEAD_LOW}, {VIX_DEAD_HIGH}] — skip today",
         }
 
+    # Preferred path: read state from the RH-live tracker (orb_live_tracker.py).
+    # Only use it when fresh (last tick within 30s — means tracker is actively
+    # polling) and matches today's date + requested root. Falls through to the
+    # massive.com path if the tracker isn't running or is stale.
+    live = _try_live_state(root, ref)
+    if live is not None:
+        return _render_live_response(live, ref, root, prior_vix, vix_date)
+
     # Pre-OR (before 09:30 ET on trading day)
     or_start_dt = _today_at(*OR_START_HHMM, ref=ref)
     or_end_dt = _today_at(*OR_END_HHMM, ref=ref)
@@ -328,22 +523,24 @@ def analyze(now: datetime | None = None) -> dict:
         return {
             "success": True,
             "state": "pre_or",
+            "root": root,
             "as_of_et": ref.isoformat(timespec="seconds"),
             "prior_vix": round(prior_vix, 2),
             "vix_as_of": vix_date,
             "minutes_until_or": int((or_start_dt - ref).total_seconds() // 60),
-            "size_guidance": _compute_size(prior_vix),
+            "size_guidance": _compute_size(prior_vix, root=root),
             "next_action": f"OR forms at 09:30 ET ({or_start_dt.strftime('%H:%M')})",
         }
 
     # Pull intraday bars for current state
-    all_bars = _get_mnq_intraday(ref)
+    all_bars = _get_mnq_intraday(ref, root=root)
     if not all_bars:
         return {
             "success": False,
             "state": "data_error",
+            "root": root,
             "as_of_et": ref.isoformat(timespec="seconds"),
-            "reason": "could not fetch MNQ 15m bars from yfinance",
+            "reason": f"could not fetch {root} 15m bars from massive.com",
         }
 
     today_bars = _bars_for_today(all_bars, ref)
@@ -355,6 +552,7 @@ def analyze(now: datetime | None = None) -> dict:
         return {
             "success": True,
             "state": "or_forming",
+            "root": root,
             "as_of_et": ref.isoformat(timespec="seconds"),
             "prior_vix": round(prior_vix, 2),
             "vix_as_of": vix_date,
@@ -364,7 +562,7 @@ def analyze(now: datetime | None = None) -> dict:
                 "running_low": or_bar["low"] if or_bar else None,
             },
             "minutes_until_or_close": int((or_end_dt - ref).total_seconds() // 60),
-            "size_guidance": _compute_size(prior_vix),
+            "size_guidance": _compute_size(prior_vix, root=root),
             "next_action": f"OR completes at 09:45 ET",
         }
 
@@ -374,6 +572,7 @@ def analyze(now: datetime | None = None) -> dict:
         return {
             "success": False,
             "state": "data_error",
+            "root": root,
             "as_of_et": ref.isoformat(timespec="seconds"),
             "reason": "09:30 ET bar not found in fetched data (may be data delay — try again in a few minutes)",
         }
@@ -387,6 +586,9 @@ def analyze(now: datetime | None = None) -> dict:
 
     common = {
         "success": True,
+        "root": root,
+        "tier": cfg["tier"],
+        "validated": cfg["validated"],
         "as_of_et": ref.isoformat(timespec="seconds"),
         "prior_vix": round(prior_vix, 2),
         "vix_as_of": vix_date,
@@ -394,7 +596,7 @@ def analyze(now: datetime | None = None) -> dict:
         "or_low": or_low,
         "or_width_pts": round(or_width, 2),
         "current_price": last_bar["close"] if last_bar else None,
-        "size_guidance": _compute_size(prior_vix),
+        "size_guidance": _compute_size(prior_vix, root=root),
     }
 
     if breakout:
@@ -405,9 +607,9 @@ def analyze(now: datetime | None = None) -> dict:
         if next_bar:
             entry_price = next_bar["open"]
             if direction == "long":
-                init_stop = entry_price - INIT_STOP_POINTS
+                init_stop = entry_price - init_stop_pts
             else:
-                init_stop = entry_price + INIT_STOP_POINTS
+                init_stop = entry_price + init_stop_pts
 
             # Soft breadth warning (exploratory — see orb_breadth.py)
             breadth_info = _breadth_warning(today.isoformat(), direction)
@@ -419,13 +621,13 @@ def analyze(now: datetime | None = None) -> dict:
                 "breakout_bar_close": bar["close"],
                 "entry_price_expected": round(entry_price, 2),
                 "init_stop": round(init_stop, 2),
-                "trail_stop_distance_pts": TRAIL_POINTS,
-                "max_loss_per_contract_dollars": INIT_STOP_POINTS * POINT_VALUE_DOLLARS,
+                "trail_stop_distance_pts": trail_pts,
+                "max_loss_per_contract_dollars": init_stop_pts * point_value,
                 "breadth_warning": breadth_info,
                 "instructions": [
-                    f"Place MARKET {direction.upper()} for MNQ at {entry_price:.2f} ({common['size_guidance']['contracts']} contracts)",
-                    f"Stop-market at {init_stop:.2f} ({INIT_STOP_POINTS} pts = ${INIT_STOP_POINTS * POINT_VALUE_DOLLARS:.0f} risk per contract)",
-                    f"Begin 25pt trailing-stop logic: as price moves favorably, raise stop to (MFE - 25pts)",
+                    f"Place MARKET {direction.upper()} for {root} at {entry_price:.2f} ({common['size_guidance']['contracts']} contracts)",
+                    f"Stop-market at {init_stop:.2f} ({init_stop_pts} pts = ${init_stop_pts * point_value:.0f} risk per contract)",
+                    f"Begin {trail_pts}pt trailing-stop logic: as price moves favorably, raise stop to (MFE - {trail_pts}pts)",
                     f"Time exit: market-on-close at 16:00 ET if not stopped first",
                 ],
             }
