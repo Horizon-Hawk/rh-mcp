@@ -99,6 +99,110 @@ def _now_et() -> datetime:
     return datetime.now(tz=ET)
 
 
+# -----------------------------------------------------------------------------
+# Overnight S/R levels — one-shot historical pull at startup
+# -----------------------------------------------------------------------------
+
+def _front_month_symbol(root: str, ref: datetime) -> str:
+    """MNQ front-month symbol for massive.com API. Codes: H=Mar, M=Jun,
+    U=Sep, Z=Dec. Returns single-digit-year format (e.g., MNQM6 for Jun 2026)."""
+    yr = ref.year % 10
+    mo = ref.month
+    if mo <= 3:
+        return f"{root}H{yr}"
+    if mo <= 6:
+        return f"{root}M{yr}"
+    if mo <= 9:
+        return f"{root}U{yr}"
+    return f"{root}Z{yr}"
+
+
+def fetch_overnight_levels(root: str = "MNQ") -> dict:
+    """One-shot pull of recent MNQ bars from massive.com → overnight high/low.
+
+    Window = prior RTH close (yesterday 16:00 ET; Friday 16:00 ET if Monday)
+    through current time. Filters bars within window and returns
+    {"on_high": float, "on_low": float, "bars_used": int} on success.
+    Returns {"on_high": None, "on_low": None, "error": str} on any failure
+    so the tracker can still run with PM-only S/R.
+
+    Requires ~/.marketdata_api_key. Uses massive.com (same source as backtest
+    data — known stable, 5/min rate limit, ~1s response).
+    """
+    import urllib.request
+    import urllib.error
+
+    key_path = Path.home() / ".marketdata_api_key"
+    if not key_path.exists():
+        return {"on_high": None, "on_low": None,
+                "error": f"no API key at {key_path}"}
+    try:
+        key = key_path.read_text().strip()
+    except Exception as e:
+        return {"on_high": None, "on_low": None, "error": f"key read: {e}"}
+
+    now = _now_et()
+    symbol = _front_month_symbol(root.upper(), now)
+
+    # Pull last 72h to comfortably cover Friday→Monday gap on weekends
+    gte = (now - timedelta(hours=72)).strftime("%Y-%m-%d")
+    lte = now.strftime("%Y-%m-%d")
+    url = (f"https://api.massive.com/futures/v1/aggs/{symbol}"
+           f"?resolution=15min"
+           f"&window_start.gte={gte}&window_start.lte={lte}&limit=400")
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {key}",
+                      "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return {"on_high": None, "on_low": None, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"on_high": None, "on_low": None, "error": str(e)}
+
+    bars = data.get("results") or []
+    if not bars:
+        return {"on_high": None, "on_low": None, "error": "no bars returned"}
+
+    # Overnight window: prior RTH close → today's OR start (09:30 ET)
+    today_or_start = now.replace(hour=OR_START[0], minute=OR_START[1],
+                                  second=0, microsecond=0)
+    # Friday close if today is Monday, else yesterday's close
+    if now.weekday() == 0:
+        prior_close = (now - timedelta(days=3)).replace(
+            hour=16, minute=0, second=0, microsecond=0)
+    else:
+        prior_close = (now - timedelta(days=1)).replace(
+            hour=16, minute=0, second=0, microsecond=0)
+
+    on_high = None
+    on_low = None
+    bars_used = 0
+    for b in bars:
+        ts_ns = b.get("window_start") or 0
+        ts = datetime.fromtimestamp(ts_ns / 1e9,
+                                     tz=timezone.utc).astimezone(ET)
+        if not (prior_close <= ts < today_or_start):
+            continue
+        bars_used += 1
+        h = b.get("high")
+        l = b.get("low")
+        if h is not None:
+            on_high = h if on_high is None else max(on_high, h)
+        if l is not None:
+            on_low = l if on_low is None else min(on_low, l)
+
+    if bars_used == 0:
+        return {"on_high": None, "on_low": None,
+                "error": f"no bars in window {prior_close} → {today_or_start}"}
+    return {"on_high": on_high, "on_low": on_low, "bars_used": bars_used,
+            "symbol": symbol,
+            "window_start_et": prior_close.isoformat(timespec="seconds"),
+            "window_end_et": today_or_start.isoformat(timespec="seconds")}
+
+
 def _bar_bucket(now: datetime) -> tuple[tuple[int, int], tuple[int, int]]:
     """Which 15-min bar bucket does `now` fall in? Returns (start_hhmm, end_hhmm)."""
     minute_of_day = now.hour * 60 + now.minute
@@ -160,11 +264,17 @@ def _new_state(now: datetime, root: str) -> dict:
         "session_state": "pre_or",
         # PM/overnight high/low — running min/max of ticks before OR_START.
         # Used by scan_orb_mnq to gate triggers when PM S/R sits near OR boundary.
-        # Only meaningful if the tracker is running before 09:30 ET (default
-        # --start 9:25 captures only the last 5 min — start at 4:00 ET to get
-        # the full premarket).
+        # pm_high/pm_low: same-day premarket (04:00 → 09:30 ET) running min/max,
+        #                 populated tick-by-tick by process_tick().
+        # on_high/on_low: overnight session (prior 16:00 ET → today 09:30 ET),
+        #                 populated by a single fetch_overnight_levels() call at
+        #                 session startup. Required for full overnight S/R
+        #                 coverage since tick polling can't reach back in time.
         "pm_high": None,
         "pm_low": None,
+        "on_high": None,
+        "on_low": None,
+        "on_fetch_meta": None,
     }
 
 
@@ -374,6 +484,31 @@ def run_session(root: str = "MNQ",
     if not state or state.get("date") != _now_et().astimezone(ET).date().isoformat():
         state = _new_state(_now_et(), root)
         _save_state(state)
+
+    # One-shot overnight levels pull — populates on_high/on_low for scan_orb_mnq's
+    # S/R confirmation gate. Tick polling alone can't capture pre-04:00 data
+    # (overnight Globex + AH from prior session).
+    if state.get("on_high") is None:
+        try:
+            on_levels = fetch_overnight_levels(root=root)
+            state["on_high"] = on_levels.get("on_high")
+            state["on_low"] = on_levels.get("on_low")
+            state["on_fetch_meta"] = {
+                k: v for k, v in on_levels.items()
+                if k not in ("on_high", "on_low")
+            }
+            _save_state(state)
+            if on_levels.get("on_high") is not None:
+                print(f"[orb_live_tracker] overnight S/R: high={on_levels['on_high']} "
+                      f"low={on_levels['on_low']} (bars_used={on_levels.get('bars_used')})",
+                      file=sys.stderr)
+            else:
+                print(f"[orb_live_tracker] overnight fetch skipped: "
+                      f"{on_levels.get('error')}",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[orb_live_tracker] overnight fetch error: {e} (continuing)",
+                  file=sys.stderr)
 
     print(f"[orb_live_tracker] starting poll loop ({root}, {poll_secs}s interval)",
           file=sys.stderr)
