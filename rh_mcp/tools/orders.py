@@ -1,6 +1,10 @@
 """Order placement, cancellation, and management tools."""
 
+import json as _json
+import os
+import subprocess
 import time
+from pathlib import Path
 
 from rh_mcp.lib.rh_client import client
 from rh_mcp.auth import default_account
@@ -13,6 +17,137 @@ def _to_float(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight order book check
+# ---------------------------------------------------------------------------
+
+_ORDER_BOOK_SCRIPT = Path(
+    os.environ.get("RH_ORDER_BOOK_SCRIPT")
+    or (Path.home() / "order_book.py")
+)
+
+
+def _preflight_order_book(ticker: str, price: float, side: str = "buy") -> dict:
+    """Run order_book.py and return (allowed, reason, book_snapshot).
+
+    Enforces ROBINHOOD.md entry rules at the API layer — prevents accidentally
+    placing stock entries without first checking top-of-book pressure, walls,
+    and spread. Refuses when:
+      - OBI top-10 signals STRONG against trade direction
+      - Spread > 1% of price
+      - Wall within $0.50 of entry on the entry side
+
+    Pass force=True at the caller to bypass after manual review.
+    """
+    if not _ORDER_BOOK_SCRIPT.exists():
+        return {
+            "ok": True,
+            "reason": f"order_book.py not found at {_ORDER_BOOK_SCRIPT} — skipping preflight (set RH_ORDER_BOOK_SCRIPT env)",
+            "book": None,
+        }
+    try:
+        result = subprocess.run(
+            ["python", str(_ORDER_BOOK_SCRIPT), ticker.upper(), f"{price:.2f}"],
+            capture_output=True, text=True, timeout=45,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": "order_book.py timed out (>45s)", "book": None}
+    except Exception as e:
+        return {"ok": False, "reason": f"order_book.py failed: {e}", "book": None}
+
+    book = None
+    for line in result.stdout.splitlines():
+        if line.startswith("JSON: "):
+            try:
+                book = _json.loads(line[6:])
+                break
+            except Exception:
+                pass
+    if book is None:
+        return {
+            "ok": False,
+            "reason": "order_book.py produced no JSON output",
+            "stderr": result.stderr[-500:] if result.stderr else "",
+            "book": None,
+        }
+
+    side = side.lower()
+    obi10 = (book.get("obi_10") or {}).get("signal", "BALANCED")
+    obi10_ratio = (book.get("obi_10") or {}).get("ratio")
+    spread = book.get("spread") or 0.0
+    walls_key = "ask_walls" if side == "buy" else "bid_walls"
+    walls = book.get(walls_key) or []
+
+    # Refuse: STRONG signal against trade direction
+    if side == "buy" and "STRONG SELL" in obi10:
+        return {
+            "ok": False,
+            "reason": (
+                f"Pre-flight FAIL: OBI top-10 = STRONG SELL PRESSURE "
+                f"(ratio {obi10_ratio}). Framework: skip or downgrade. "
+                f"Pass force=True to override after review."
+            ),
+            "book": book,
+        }
+    if side == "sell" and "STRONG BUY" in obi10:
+        return {
+            "ok": False,
+            "reason": (
+                f"Pre-flight FAIL: OBI top-10 = STRONG BUY PRESSURE "
+                f"(ratio {obi10_ratio}) — short into buying. "
+                f"Pass force=True to override after review."
+            ),
+            "book": book,
+        }
+
+    # Refuse: spread > 1% of price
+    spread_pct = spread / price if price > 0 else 0
+    if spread_pct > 0.01:
+        return {
+            "ok": False,
+            "reason": (
+                f"Pre-flight FAIL: spread ${spread:.2f} = "
+                f"{spread_pct * 100:.2f}% > 1% threshold. Adjust limit_price "
+                f"for slippage or pass force=True."
+            ),
+            "book": book,
+        }
+
+    # Refuse: wall within $0.50 of entry on the entry side
+    for wall in walls:
+        wp = wall.get("price")
+        wsz = wall.get("size")
+        if wp is None:
+            continue
+        if side == "buy" and 0 < wp - price <= 0.50:
+            return {
+                "ok": False,
+                "reason": (
+                    f"Pre-flight FAIL: ask wall {wsz} sh at ${wp:.2f} within "
+                    f"$0.50 of entry ${price:.2f}. Framework: skip or wait. "
+                    f"Pass force=True to override."
+                ),
+                "book": book,
+            }
+        if side == "sell" and 0 < price - wp <= 0.50:
+            return {
+                "ok": False,
+                "reason": (
+                    f"Pre-flight FAIL: bid wall {wsz} sh at ${wp:.2f} within "
+                    f"$0.50 of entry ${price:.2f}. Framework: skip or wait. "
+                    f"Pass force=True to override."
+                ),
+                "book": book,
+            }
+
+    return {
+        "ok": True,
+        "reason": f"preflight passed (OBI10 {obi10}, spread ${spread:.2f}, no near walls)",
+        "book": book,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +465,16 @@ def place_with_stop(
     account_number: str | None = None,
     extended_hours: bool = False,
     fill_timeout_sec: int = 60,
+    force: bool = False,
 ) -> dict:
-    """Atomic: limit BUY, wait for fill, then place a native fixed stop-loss.
+    """Atomic: order_book preflight → limit BUY → wait for fill → fixed stop-loss.
+
+    PRE-FLIGHT CHECK (new 2026-05-15): Before submitting the entry, runs
+    `order_book.py TICKER LIMIT_PRICE` and refuses to place if:
+      - OBI top-10 = STRONG SELL PRESSURE  (per feedback_obi_thresholds)
+      - Spread > 1% of price (per ROBINHOOD.md)
+      - Ask wall within $0.50 of entry  (per ROBINHOOD.md)
+    Pass force=True to bypass after manual review.
 
     For trailing stops use `place_with_trailing_stop` instead.
 
@@ -346,10 +489,27 @@ def place_with_stop(
         limit_price: Entry limit price.
         stop_price: Native stop-loss level.
         fill_timeout_sec: Seconds to wait for entry fill before bailing.
+        force: Bypass the order-book pre-flight check after manual review.
     """
     rh = client()
     sym = ticker.strip().upper()
     acct = account_number or default_account()
+
+    # Pre-flight: order book check — refuse on STRONG opposing signal / wide spread / near wall
+    if not force:
+        preflight = _preflight_order_book(sym, limit_price, side="buy")
+        if not preflight["ok"]:
+            return {
+                "success": False,
+                "stage": "preflight_order_book",
+                "error": preflight["reason"],
+                "order_book": preflight.get("book"),
+                "hint": "Set force=True to override after reviewing the book.",
+            }
+        # Bubble up the snapshot so caller sees what the book looked like at entry
+        preflight_snapshot = preflight.get("book")
+    else:
+        preflight_snapshot = {"forced": True}
 
     entry = place_long(sym, quantity, limit_price, account_number=acct, extended_hours=extended_hours)
     if not entry.get("success"):
@@ -387,6 +547,7 @@ def place_with_stop(
         "filled_quantity": filled_qty,
         "limit_price": limit_price,
         "stop_price": stop_price,
+        "preflight_order_book": preflight_snapshot,
     }
 
 

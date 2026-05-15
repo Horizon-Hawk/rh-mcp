@@ -158,6 +158,13 @@ def _new_state(now: datetime, root: str) -> dict:
         "last_tick_ts_et": now.astimezone(ET).isoformat(timespec="seconds"),
         "last_tick_price": None,
         "session_state": "pre_or",
+        # PM/overnight high/low — running min/max of ticks before OR_START.
+        # Used by scan_orb_mnq to gate triggers when PM S/R sits near OR boundary.
+        # Only meaningful if the tracker is running before 09:30 ET (default
+        # --start 9:25 captures only the last 5 min — start at 4:00 ET to get
+        # the full premarket).
+        "pm_high": None,
+        "pm_low": None,
     }
 
 
@@ -282,6 +289,14 @@ def process_tick(state: dict, now: datetime, price: float) -> dict:
     if now >= breakout_end_dt and state.get("breakout") is None and state.get("or_locked"):
         state["session_state"] = "window_closed_no_signal"
 
+    # Premarket high/low — track every tick before OR_START (09:30 ET) as PM S/R.
+    # Once OR is locked, pm_high/pm_low are frozen (no longer updated).
+    if not state.get("or_locked"):
+        if state.get("pm_high") is None or price > state["pm_high"]:
+            state["pm_high"] = price
+        if state.get("pm_low") is None or price < state["pm_low"]:
+            state["pm_low"] = price
+
     # Update last-tick markers
     state["last_tick_ts_et"] = now.isoformat(timespec="seconds")
     state["last_tick_price"] = price
@@ -384,8 +399,9 @@ def main():
     p.add_argument("--root", default="MNQ", help="Futures root (default MNQ)")
     p.add_argument("--once", action="store_true",
                    help="Single poll then exit (for testing)")
-    p.add_argument("--start", default="9:25",
-                   help="Start time HH:MM ET (default 9:25)")
+    p.add_argument("--start", default="4:00",
+                   help="Start time HH:MM ET (default 4:00 — captures full premarket "
+                        "for pm_high/pm_low used by scan_orb_mnq's S/R gate)")
     p.add_argument("--end", default="11:05",
                    help="End time HH:MM ET (default 11:05)")
     args = p.parse_args()
