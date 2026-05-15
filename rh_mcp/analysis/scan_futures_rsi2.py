@@ -1,22 +1,30 @@
 """Futures RSI(2) mean reversion scanner.
 
-Per-instrument edge re-validated 2026-05-14 on 5y daily bars:
+Per-instrument edge — initial run 2026-05-14 on yfinance 5y daily,
+re-validated 2026-05-15 on stitched real 1m → daily for MGC & MCL:
 
-  Root  Action       Long-PF  Short-PF  Expected $/yr
-  ----  -----------  -------  --------  -------------
-  MNQ   BOTH         2.48     1.50      +$2,418
-  NQ    LONG_ONLY    2.28     skip      +$18,215
-  MES   BOTH         1.63     1.50      +$994
-  RTY   BOTH         2.47     3.20      +$9,401
-  M2K   BOTH         2.68     1.63      +$809
-  YM    LONG_ONLY    1.44     skip      +$3,659
-  MYM   SHORT_ONLY   skip     1.56      +$177
-  GC    LONG_ONLY    3.60     LOSING    +$4,217
-  MGC   LONG_ONLY    1.46     LOSING    +$669
-  SI    LONG_ONLY    33.91*   LOSING    +$14,338    *n=11 exploratory only
-  CL    BOTH         1.79     1.51      +$7,057
+  Root  Action       Long-PF  Short-PF  Expected $/yr  Source
+  ----  -----------  -------  --------  -------------  -------
+  MNQ   BOTH         2.48     1.50      +$2,418        yfinance 5y
+  NQ    LONG_ONLY    2.28     skip      +$18,215       yfinance 5y
+  MES   BOTH         1.63     1.50      +$994          yfinance 5y
+  RTY   BOTH         2.47     3.20      +$9,401        yfinance 5y
+  M2K   BOTH         2.68     1.63      +$809          yfinance 5y
+  YM    LONG_ONLY    1.44     skip      +$3,659        yfinance 5y
+  MYM   SHORT_ONLY   skip     1.56      +$177          yfinance 5y
+  GC    LONG_ONLY    3.60     LOSING    +$4,217        yfinance 5y
+  MGC   LONG_ONLY    1.50     LOSING    +$1,618        STITCHED 4.13y ⭐
+  SI    LONG_ONLY    33.91*   LOSING    +$14,338       *n=11 exploratory
+  CL    BOTH         1.79     1.51      +$7,057        yfinance 5y
+  MCL   LONG_ONLY    1.54     LOSING    +$900          STITCHED 4.43y ⭐
 
-  SKIP: ES (PF 1.16 long, marginal), NG (negative), MCL (no data)
+  SKIP: ES (PF 1.16 long, marginal), NG (negative)
+
+  ⭐ NOTE on MGC/MCL: re-validation on real data (not yfinance, no roll
+  adjustment artifacts) showed Phase 3.5 SMA200 + volume 1.2x filters
+  DESTROY the edge on commodity contracts. Use BARE RSI<5 long only.
+  This scanner still applies the filters by default — for MGC/MCL,
+  callers should pass `use_filters=False` once that flag is added.
 
 Scanner finds:
   - LONG signals: RSI(2) < oversold AND price > 200-SMA AND action allows long
@@ -53,14 +61,23 @@ INSTRUMENT_CONFIG: dict[str, dict] = {
     # Metals — COMEX
     "GC":  {"action": "LONG_ONLY",  "point_value": 100.0,  "tier": "A",
             "label": "Gold (full)", "expected_yr_pnl": 4217},
-    "MGC": {"action": "LONG_ONLY",  "point_value": 10.0,   "tier": "B",
-            "label": "Micro Gold", "expected_yr_pnl": 669},
+    "MGC": {"action": "LONG_ONLY",  "point_value": 10.0,   "tier": "A",
+            "label": "Micro Gold", "expected_yr_pnl": 1618,
+            "note": "Re-validated 2026-05-15 on real stitched 1m data: "
+                    "BARE RSI<5 LONG (no SMA/vol filter), WR 64%, PF 1.50, "
+                    "128 trades / 4.13y, 5 of 5 years positive, max DD $3,985"},
     "SI":  {"action": "LONG_ONLY",  "point_value": 5000.0, "tier": "EXPLORATORY",
             "label": "Silver (n=11)", "expected_yr_pnl": 14338,
             "note": "PF 33.91 on only 11 trades — small sample, treat as observational"},
     # Energy — NYMEX
     "CL":  {"action": "BOTH",       "point_value": 1000.0, "tier": "B",
             "label": "Crude Oil", "expected_yr_pnl": 7057},
+    "MCL": {"action": "LONG_ONLY",  "point_value": 100.0,  "tier": "B",
+            "label": "Micro WTI Crude", "expected_yr_pnl": 900,
+            "note": "Validated 2026-05-15 on real stitched 1m data: "
+                    "BARE RSI<5 LONG (no filters), WR 70%, PF 1.54, "
+                    "138 trades / 4.43y. Phase 3.5 filters destroy edge — "
+                    "use bare RSI<5 only"},
 }
 
 # Default basket = every instrument with documented edge
