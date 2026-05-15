@@ -22,14 +22,18 @@ from rh_mcp.auth import default_account
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _leg(expiry: str, strike: float, option_type: str, action: str, effect: str = "open") -> dict:
-    """Build a single leg dict in RH's expected format."""
+def _leg(expiry: str, strike: float, option_type: str, action: str, effect: str = "open", ratio: int = 1) -> dict:
+    """Build a single leg dict in RH's expected format.
+    ratio_quantity is the leg multiplier within the spread — 1 for standard
+    multi-leg orders, 2+ for ratio spreads. robin_stocks requires this key.
+    """
     return {
         "expirationDate": expiry,
         "strike": float(strike),
         "optionType": option_type.lower(),
         "effect": effect.lower(),
         "action": action.lower(),
+        "ratio_quantity": int(ratio),
     }
 
 

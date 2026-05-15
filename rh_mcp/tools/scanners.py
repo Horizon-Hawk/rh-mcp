@@ -105,22 +105,25 @@ def scan_unusual_oi(
 
 
 def get_futures_quote(ticker: str) -> dict:
-    """Get current quote for an RH futures contract (e.g. 'MNQM26').
+    """Get current quote for an RH futures contract.
 
-    The ticker must be in the UUID cache first — register via
-    futures_client.register_uuid(ticker, uuid). UUIDs are sourced by inspecting
-    RH's web app network calls (the quote endpoint takes UUIDs, not tickers).
+    Accepts any of:
+      - root symbol ('MNQ', 'ES', 'GC', ...) → auto-resolves to active front month
+      - full dated ticker ('MNQM26', 'ESU26', ...) → cache lookup, falls back to live
+      - contract UUID
+
+    Roots in KNOWN_ROOTS resolve via /marketdata/futures/quotes/v1/?symbols=...
+    and are persisted to ~/.rh_futures_uuids.json on first lookup.
     """
     from rh_mcp.analysis import futures_client as fc
     try:
         q = fc.get_quote_by_ticker(ticker)
         if q is None:
-            uuid = fc.get_uuid(ticker)
             return {
                 "success": False,
-                "error": f"ticker {ticker} not in UUID cache. Register with "
-                         f"futures_client.register_uuid(ticker, uuid). "
-                         f"UUID currently {uuid!r}.",
+                "error": f"could not resolve {ticker!r} to a contract. "
+                         f"Pass a root ({list(fc.KNOWN_ROOTS)[:6]}...), "
+                         f"a full ticker ('MNQM26'), or a UUID.",
             }
         return {"success": True, **q}
     except Exception as e:
@@ -207,6 +210,47 @@ def manage_orb_trail(
         return {"success": False, "error": f"manage_orb_trail failed: {e}"}
 
 
+def scan_orb_futures(root: str = "MNQ") -> dict:
+    """ORB scanner parameterized for any CME equity-index root.
+
+    Validated root: MNQ (PF 1.93 on 2y backtest). BETA roots: MES/NQ/ES/RTY/M2K —
+    same pattern, stop/trail points scaled to similar dollar risk but NOT yet
+    backtested per-root (see task #19).
+
+    Returns the same state machine as scan_orb_mnq, just for a different root.
+    """
+    from rh_mcp.analysis import orb_mnq
+    try:
+        return orb_mnq.analyze(root=root)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": f"scan_orb_futures failed: {e}"}
+
+
+def scan_mnq_cvd() -> dict:
+    """MNQ CVD divergence scanner. Reads tape state from NT8's TC_CVDExporter
+    indicator (which must be loaded on a 15m MNQ chart in NinjaTrader 8) and
+    detects:
+
+      - bearish_divergence: price HH but CVD LH (buyers absorbed)
+      - bullish_divergence: price LL but CVD HL (sellers absorbed)
+      - absorption_buy:     heavy buy volume, no price advance (current bar)
+      - absorption_sell:    heavy sell volume, no price decline (current bar)
+
+    Returns the signal + recent bar window + a bias call. Use during ORB or
+    RSI(2) trade management to detect exhaustion before price confirms.
+
+    Returns stale=True if the NT8 state file hasn't been refreshed in >90s —
+    in that case NT8 may be closed or the indicator unloaded.
+    """
+    from rh_mcp.analysis import cvd_monitor
+    try:
+        return cvd_monitor.analyze()
+    except Exception as e:
+        return {"success": False, "error": f"scan_mnq_cvd failed: {e}"}
+
+
 def scan_orb_mnq() -> dict:
     """MNQ Opening Range Breakout scanner (Phase 3.6). Returns current state of
     today's setup: pre_or / or_forming / or_set / long_trigger / short_trigger /
@@ -288,10 +332,12 @@ def cancel_futures_order(order_id: str, account_id: str | None = None) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def flatten_futures_position(contract_uuid: str, account_id: str | None = None) -> dict:
+def flatten_futures_position(contract: str, account_id: str | None = None) -> dict:
     """Emergency close a futures position via market order. RH auto-determines
     side (sell longs / cover shorts) and quantity from current position. Fires
     POST /ceres/v1/accounts/{id}/flatten_position.
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID.
 
     IMPORTANT: places a MARKET order — fills at whatever price the book offers.
     Use only when you want immediate exit; for orderly exits use place_futures_order
@@ -299,13 +345,23 @@ def flatten_futures_position(contract_uuid: str, account_id: str | None = None) 
     """
     from rh_mcp.analysis import futures_client as fc
     try:
-        return fc.flatten_position(contract_uuid=contract_uuid, account_id=account_id)
+        uuid = fc.resolve_contract_input(contract)
+        if not uuid:
+            return {
+                "success": False,
+                "error": f"could not resolve {contract!r} to a contract UUID.",
+                "contract_input": contract,
+            }
+        result = fc.flatten_position(contract_uuid=uuid, account_id=account_id)
+        result["contract_input"] = contract
+        result["resolved_contract_uuid"] = uuid
+        return result
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "contract_input": contract}
 
 
 def place_futures_order(
-    contract_uuid: str,
+    contract: str,
     side: str,
     quantity: int = 1,
     order_type: str = "LIMIT",
@@ -320,6 +376,10 @@ def place_futures_order(
     PLACES REAL ORDERS. Verify all inputs before calling. The function generates
     a unique refId per call (RH dedupes by refId so accidental double-call is safe).
 
+    contract: any of:
+      - root ('MNQ', 'ES', 'MES', 'GC', ...) → resolves to active front month
+      - full ticker ('MNQM26', 'ESU26', ...) → cache lookup
+      - contract UUID
     side: 'BUY' or 'SELL'
     order_type: 'LIMIT' (default) or 'MARKET'. MARKET requires accept_market_risk=True.
     time_in_force: 'GFD' (day order, default) or 'GTC'.
@@ -327,17 +387,270 @@ def place_futures_order(
 
     Returns: {http_status, request_body, response} where response contains
     the order ID and derivedState (CONFIRMED / REJECTED / FILLED / CANCELLED).
+    Adds resolved_contract_uuid + contract_input on the response so the
+    caller can verify which contract actually got hit.
     """
     from rh_mcp.analysis import futures_client as fc
     try:
-        return fc.place_order(
-            contract_uuid=contract_uuid, side=side, quantity=quantity,
+        uuid = fc.resolve_contract_input(contract)
+        if not uuid:
+            return {
+                "success": False,
+                "error": f"could not resolve {contract!r} to a contract UUID. "
+                         f"Pass a root, full ticker, or UUID.",
+                "contract_input": contract,
+            }
+        result = fc.place_order(
+            contract_uuid=uuid, side=side, quantity=quantity,
             order_type=order_type, limit_price=limit_price, stop_price=stop_price,
             time_in_force=time_in_force, account_id=account_id,
             accept_market_risk=accept_market_risk,
         )
+        result["contract_input"] = contract
+        result["resolved_contract_uuid"] = uuid
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e), "contract_input": contract}
+
+
+def get_futures_ladder(
+    contract: str,
+    levels: int = 10,
+    duration_sec: float = 3.0,
+    source: str = "GLBX",
+) -> dict:
+    """Live L2 order book snapshot ('Ladder') for a futures contract.
+
+    Opens a dxLink WebSocket subscription, collects Order events for
+    duration_sec (CME book updates at ~1700 evt/sec for active MNQ), aggregates
+    by price level, returns top N bids and asks with cumulative size + order
+    count per level.
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID. Resolved to the
+    canonical /<ticker>:<exchange> symbol for the subscription.
+    levels: how many price levels per side (default 10).
+    duration_sec: how long to listen before snapshotting (default 3s — enough
+        time for the initial book snapshot to complete on liquid contracts).
+    source: dxFeed source code. 'GLBX' = CME Globex (covers all CME equity-index
+        and micros). Other CME-group exchanges may use different codes.
+
+    Returns: {snapshot: {best_bid, best_ask, mid, spread, bids[], asks[],
+              active_orders, snapshot_complete}, event_counts, ...}
+    """
+    from rh_mcp.analysis import futures_client as fc
+    from rh_mcp.analysis import ladder_stream
+    import asyncio
+
+    try:
+        uuid = fc.resolve_contract_input(contract)
+        if not uuid:
+            return {
+                "success": False,
+                "error": f"could not resolve {contract!r} to a contract UUID.",
+                "contract_input": contract,
+            }
+
+        # We need the canonical symbol (/MNQM26:XCME) for the WS subscription,
+        # not the UUID. Pull the quote to get the symbol.
+        quote = fc.get_quote_by_ticker(contract)
+        if not quote or not quote.get("symbol"):
+            return {
+                "success": False,
+                "error": f"could not get canonical symbol for {contract!r}",
+                "contract_input": contract,
+            }
+        canonical_symbol = quote["symbol"]
+
+        result = asyncio.run(ladder_stream.snapshot_ladder(
+            symbol=canonical_symbol,
+            duration_sec=duration_sec,
+            levels=levels,
+            source=source,
+        ))
+
+        return {
+            "success": True,
+            "contract_input": contract,
+            "resolved_contract_uuid": uuid,
+            "symbol": canonical_symbol,
+            **result,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"get_futures_ladder failed: {type(e).__name__}: {e}",
+            "contract_input": contract,
+        }
+
+
+def get_futures_contract_quantity(contract: str, account_id: str | None = None) -> dict:
+    """Held / pending / net quantity for a specific futures contract.
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID.
+    Useful for sanity-checking position size before placing exit orders.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        uuid = fc.resolve_contract_input(contract)
+        if not uuid:
+            return {
+                "success": False,
+                "error": f"could not resolve {contract!r} to a contract UUID.",
+                "contract_input": contract,
+            }
+        data = fc.get_contract_quantity(contract_uuid=uuid, account_id=account_id)
+        return {"success": True, "contract_input": contract,
+                "resolved_contract_uuid": uuid, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e), "contract_input": contract}
+
+
+def get_futures_order_validation_rules(account_id: str | None = None) -> dict:
+    """Server-side order validation rules — max order quantity, etc.
+
+    Useful before placing large or unusual orders to catch caps/limits the
+    server will reject. Defaults to the active futures account.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        return {"success": True, **fc.get_order_validation_rules(account_id=account_id)}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def get_futures_order_detail(
+    order_id: str,
+    asset_type: str = "FUTURES",
+    account_number: str = "588784215",
+) -> dict:
+    """Single-order full detail via the wormhole /orders/{id} endpoint.
+
+    Richer than the ceres list view — includes productSymbol, lastDayToTrade,
+    full executions list, fees breakdown.
+
+    asset_type: 'FUTURES' (default), 'EQUITY', 'OPTION', or 'CRYPTO' — same
+    endpoint serves all four asset types.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        return {"success": True, "order_id": order_id, **fc.get_order_detail(
+            order_id=order_id, asset_type=asset_type, account_number=account_number,
+        )}
+    except Exception as e:
+        return {"success": False, "error": str(e), "order_id": order_id}
+
+
+def get_recent_orders_unified(account_number: str = "588784215") -> dict:
+    """Recent orders across ALL asset types (stock, options, futures, crypto)
+    in one call. Each row has assetType — filter client-side.
+
+    Useful for a unified 'what just filled / what's working' view that doesn't
+    require three separate per-asset scans.
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        rows = fc.get_recent_orders_unified(account_number=account_number)
+        # Surface a per-asset breakdown on top for quick consumption
+        from collections import Counter
+        by_asset = Counter((r.get("assetType") or "?") for r in rows)
+        by_state = Counter((r.get("derivedState") or "?") for r in rows)
+        return {
+            "success": True,
+            "count": len(rows),
+            "by_asset": dict(by_asset),
+            "by_state": dict(by_state),
+            "orders": rows,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def monitor_orb_position(
+    entry_time_et: str | None = None,
+    moc_minute_offset: int = 0,
+    min_tighten_pts: float = 1.0,
+    dry_run: bool = False,
+    account_id: str | None = None,
+) -> dict:
+    """One iteration of the Phase 3.6 ORB monitor loop.
+
+    Reads the open MNQ position, computes the recommended trailing stop, and
+    fires ONE action this turn:
+      - Past 15:55 ET: market-on-close flatten
+      - Recommended stop tighter than working stop: atomic /replace
+      - Else: no action
+
+    Designed to be driven by ScheduleWakeup — each call is idempotent and
+    short. Returns next_wakeup_seconds as a hint for the loop driver.
+
+    dry_run=True computes the action but does not call RH (verification).
+    """
+    from rh_mcp.analysis import orb_monitor
+    try:
+        return {"success": True, **orb_monitor.monitor(
+            entry_time_et=entry_time_et,
+            moc_minute_offset=moc_minute_offset,
+            min_tighten_pts=min_tighten_pts,
+            dry_run=dry_run,
+            account_id=account_id,
+        )}
+    except Exception as e:
+        return {"success": False, "error": f"monitor_orb_position failed: {e}"}
+
+
+def place_futures_with_stop(
+    contract: str,
+    side: str,
+    quantity: int = 1,
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    stop_distance_points: float | None = None,
+    order_type: str = "LIMIT",
+    time_in_force: str = "GFD",
+    stop_time_in_force: str = "GTC",
+    fill_timeout_sec: float = 60.0,
+    poll_interval_sec: float = 2.0,
+    account_id: str | None = None,
+    accept_market_risk: bool = False,
+) -> dict:
+    """Place an entry + automatic stop in one call.
+
+    Closes the unprotected window between fill and manual stop placement.
+    Specify exactly one of stop_price (absolute) or stop_distance_points
+    (computed from fill — use this with MARKET entries).
+
+    contract: root ('MNQ'), full ticker ('MNQM26'), or UUID.
+    side: 'BUY' or 'SELL' for the entry. Stop side is auto-derived (opposite).
+    """
+    from rh_mcp.analysis import futures_client as fc
+    try:
+        uuid = fc.resolve_contract_input(contract)
+        if not uuid:
+            return {
+                "success": False,
+                "error": f"could not resolve {contract!r} to a contract UUID.",
+                "contract_input": contract,
+            }
+        result = fc.place_with_stop(
+            contract_uuid=uuid,
+            side=side,
+            quantity=quantity,
+            limit_price=limit_price,
+            stop_price=stop_price,
+            stop_distance_points=stop_distance_points,
+            order_type=order_type,
+            time_in_force=time_in_force,
+            stop_time_in_force=stop_time_in_force,
+            fill_timeout_sec=fill_timeout_sec,
+            poll_interval_sec=poll_interval_sec,
+            account_id=account_id,
+            accept_market_risk=accept_market_risk,
+        )
+        result["contract_input"] = contract
+        result["resolved_contract_uuid"] = uuid
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e), "contract_input": contract}
 
 
 def get_buying_power_breakdown(account_number: str = "588784215") -> dict:

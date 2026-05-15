@@ -25,9 +25,14 @@ except ImportError:
     ET = timezone(timedelta(hours=-4))
 
 
-INIT_STOP_POINTS = 50.0
+INIT_STOP_POINTS = 50.0       # legacy MNQ default
 TRAIL_POINTS = 25.0
 POINT_VALUE_DOLLARS = 2.0
+
+
+# Known roots ordered longest-first so MES matches before ES (substring trap)
+_KNOWN_ROOTS_PREFIX_SEARCH = ["MNQ", "MES", "MGC", "MCL", "M2K", "MYM",
+                              "RTY", "NQ", "ES", "GC", "CL", "YM", "SI"]
 
 
 def _now_et() -> datetime:
@@ -38,10 +43,22 @@ def _today_at(hh: int, mm: int) -> datetime:
     return _now_et().replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
-def _find_mnq_position() -> Optional[dict]:
-    """Return the open MNQ position (any month) from rh-mcp, normalized.
+def _extract_root(symbol: str) -> str | None:
+    """Extract a root from a contract symbol. Tries longest roots first so
+    MES doesn't match the ES prefix of MES.
+    """
+    s = (symbol or "").upper().lstrip("/")
+    for root in _KNOWN_ROOTS_PREFIX_SEARCH:
+        if s.startswith(root):
+            return root
+    return None
 
-    Returns: {direction, entry_price, quantity, contract_code, raw}, or None.
+
+def _find_futures_position(root: str | None = None) -> Optional[dict]:
+    """Return an open futures position. If root is given, filter to that root;
+    otherwise return the first open futures position found.
+
+    Returns: {direction, entry_price, quantity, contract_code, root, raw}, or None.
     """
     try:
         from rh_mcp.analysis import futures_client as fc
@@ -50,10 +67,12 @@ def _find_mnq_position() -> Optional[dict]:
         return None
 
     for p in positions:
-        # Locate the MNQ ticker — schema may use different field names; check common ones.
         sym = (p.get("contract") or p.get("contract_code") or p.get("symbol")
                or p.get("ticker") or "").upper()
-        if "MNQ" not in sym:
+        pos_root = _extract_root(sym)
+        if pos_root is None:
+            continue
+        if root is not None and pos_root != root.upper():
             continue
         qty_raw = p.get("quantity") or p.get("quantity_long") or p.get("quantity_short") or "0"
         try:
@@ -77,30 +96,40 @@ def _find_mnq_position() -> Optional[dict]:
             "entry_price": avg_price,
             "quantity": abs(qty),
             "contract_code": sym,
+            "root": pos_root,
             "raw": p,
         }
     return None
 
 
-def _front_month_ticker(now: datetime) -> str:
-    """MNQ front-month code for given date. Quarterly roll ~14th of expiry month."""
+# Backward-compat alias — older callers expect _find_mnq_position
+def _find_mnq_position() -> Optional[dict]:
+    return _find_futures_position(root="MNQ")
+
+
+def _front_month_ticker(now: datetime, root: str = "MNQ") -> str:
+    """Quarterly front-month code for given root + date.
+
+    Cycle: H/M/U/Z. Single-digit year (massive.com convention).
+    """
     d = now.astimezone(ET)
     y = d.year % 10
     m, day = d.month, d.day
-    if (m, day) < (3, 14):  return f"MNQH{y}"
-    if (m, day) < (6, 14):  return f"MNQM{y}"
-    if (m, day) < (9, 14):  return f"MNQU{y}"
-    if (m, day) < (12, 14): return f"MNQZ{y}"
-    return f"MNQH{(y + 1) % 10}"
+    root = root.upper()
+    if (m, day) < (3, 14):  return f"{root}H{y}"
+    if (m, day) < (6, 14):  return f"{root}M{y}"
+    if (m, day) < (9, 14):  return f"{root}U{y}"
+    if (m, day) < (12, 14): return f"{root}Z{y}"
+    return f"{root}H{(y + 1) % 10}"
 
 
-def _pull_mnq_bars_since(entry_dt_et: datetime) -> list[dict] | None:
-    """Pull 15m MNQ bars from massive.com covering entry to now."""
+def _pull_mnq_bars_since(entry_dt_et: datetime, root: str = "MNQ") -> list[dict] | None:
+    """Pull 15m bars from massive.com for any root, covering entry to now."""
     try:
         key = open(os.path.expanduser("~/.marketdata_api_key")).read().strip()
     except Exception:
         return None
-    ticker = _front_month_ticker(datetime.now(tz=ET))
+    ticker = _front_month_ticker(datetime.now(tz=ET), root=root)
     today = datetime.now(tz=ET).date()
     gte = entry_dt_et.date().isoformat()
     lte = today.isoformat()
@@ -149,14 +178,31 @@ def analyze(
       stop_action: 'tighten' | 'no_change' (vs current_stop)
       action: human-readable instruction
     """
-    pos = _find_mnq_position()
+    pos = _find_futures_position()
     if pos is None:
         return {
             "success": True,
             "state": "no_position",
             "as_of_et": _now_et().isoformat(timespec="seconds"),
-            "reason": "no open MNQ position found",
+            "reason": "no open futures position found",
         }
+
+    # Look up per-instrument config (stop pts, trail pts, point value)
+    root = pos.get("root") or "MNQ"
+    try:
+        from rh_mcp.analysis.orb_mnq import ORB_CONFIG
+        cfg = ORB_CONFIG.get(root)
+    except Exception:
+        cfg = None
+    if cfg is None:
+        # Fallback to MNQ defaults if root not in config
+        init_stop_pts = INIT_STOP_POINTS
+        trail_pts = TRAIL_POINTS
+        point_value = POINT_VALUE_DOLLARS
+    else:
+        init_stop_pts = cfg["init_stop_pts"]
+        trail_pts = cfg["trail_pts"]
+        point_value = cfg["point_value"]
 
     direction = pos["direction"]
     entry = pos["entry_price"]
@@ -177,32 +223,31 @@ def analyze(
     else:
         entry_dt = _today_at(9, 45)
 
-    bars = _pull_mnq_bars_since(entry_dt)
+    bars = _pull_mnq_bars_since(entry_dt, root=root)
     if not bars:
         return {
             "success": False,
             "state": "data_error",
-            "reason": "could not fetch MNQ 15m bars",
+            "reason": f"could not fetch {root} 15m bars",
         }
 
     # Initial stop (never widen below this — it's the hard cap)
     if direction == "LONG":
-        init_stop = entry - INIT_STOP_POINTS
-        # MFE = highest high since entry
+        init_stop = entry - init_stop_pts
         mfe = max(b["high"] for b in bars)
-        trail_level = mfe - TRAIL_POINTS
+        trail_level = mfe - trail_pts
         recommended_stop = max(init_stop, trail_level)
         current_price = bars[-1]["close"]
         unreal_pnl_pts = current_price - entry
     else:  # SHORT
-        init_stop = entry + INIT_STOP_POINTS
+        init_stop = entry + init_stop_pts
         mfe = min(b["low"] for b in bars)
-        trail_level = mfe + TRAIL_POINTS
+        trail_level = mfe + trail_pts
         recommended_stop = min(init_stop, trail_level)
         current_price = bars[-1]["close"]
         unreal_pnl_pts = entry - current_price
 
-    unreal_pnl_dollars = unreal_pnl_pts * POINT_VALUE_DOLLARS * qty
+    unreal_pnl_dollars = unreal_pnl_pts * point_value * qty
     favorable_excursion_pts = abs(mfe - entry)
 
     # Decide if trail is currently above the init-stop floor
@@ -230,6 +275,7 @@ def analyze(
         "as_of_et": _now_et().isoformat(timespec="seconds"),
         "position": {
             "contract": pos["contract_code"],
+            "root": root,
             "direction": direction,
             "entry_price": round(entry, 2),
             "quantity": qty,
@@ -243,6 +289,7 @@ def analyze(
         "trail_level": round(trail_level, 2),
         "recommended_stop": round(recommended_stop, 2),
         "bars_since_entry": len(bars),
+        "point_value": point_value,
     }
 
     if current_stop is not None:
@@ -253,12 +300,12 @@ def analyze(
             if direction == "LONG":
                 result["action"] = (
                     f"UPDATE stop from {current_stop:.2f} to {recommended_stop:.2f} "
-                    f"(+{delta_pts:.1f}pts tighter, lock in ${delta_pts * POINT_VALUE_DOLLARS * qty:.0f})"
+                    f"(+{delta_pts:.1f}pts tighter, lock in ${delta_pts * point_value * qty:.0f})"
                 )
             else:
                 result["action"] = (
                     f"UPDATE stop from {current_stop:.2f} to {recommended_stop:.2f} "
-                    f"(−{delta_pts:.1f}pts tighter, lock in ${delta_pts * POINT_VALUE_DOLLARS * qty:.0f})"
+                    f"(−{delta_pts:.1f}pts tighter, lock in ${delta_pts * point_value * qty:.0f})"
                 )
         else:
             result["action"] = f"HOLD stop at {current_stop:.2f} — trail has not moved"
