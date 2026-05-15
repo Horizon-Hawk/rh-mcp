@@ -613,3 +613,105 @@ def get_account_status(account_number: str | None = None) -> dict:
         "deactivated": profile.get("deactivated"),
         "max_ach_early_access_amount": _to_float(profile.get("max_ach_early_access_amount")),
     }
+
+
+def get_full_snapshot(account_number: str | None = None) -> dict:
+    """One-call unified financial snapshot: BP, equity, all positions, all orders.
+
+    Combines get_account_status + get_portfolio + get_positions + get_option_positions
+    + get_open_orders + get_open_option_orders into a single response. Futures
+    positions are included when the rh-futures stack is wired and a futures
+    account exists; otherwise the futures section is omitted with a note.
+
+    Use this for any "show me the whole account" need — morning brief, capital
+    available before sizing, end-of-day audit. Replaces 4-6 sequential calls.
+    """
+    acct = account_number or default_account()
+    snap: dict = {"success": True, "account_number": acct}
+
+    # 1) Account status — BP, margin, PDT
+    try:
+        status = get_account_status(acct)
+        if status.get("success"):
+            snap["account_status"] = {
+                "buying_power": status.get("buying_power"),
+                "margin_buying_power": status.get("margin_buying_power"),
+                "margin_used": status.get("margin_used"),
+                "cash": status.get("cash"),
+                "cash_available_for_withdrawal": status.get("cash_available_for_withdrawal"),
+                "type": status.get("type"),
+                "day_trade_count": status.get("day_trade_count"),
+            }
+        else:
+            snap["account_status_error"] = status.get("error")
+    except Exception as e:
+        snap["account_status_error"] = str(e)
+
+    # 2) Portfolio summary — equity + option aggregates
+    try:
+        port = get_portfolio(acct)
+        if port.get("success"):
+            snap["equity"] = port.get("equity")
+            snap["option_unrealized_pnl"] = port.get("option_unrealized_pnl")
+        else:
+            snap["portfolio_error"] = port.get("error")
+    except Exception as e:
+        snap["portfolio_error"] = str(e)
+
+    # 3) Stock positions
+    try:
+        stocks = get_positions(acct)
+        if stocks.get("success"):
+            snap["stock_positions"] = stocks.get("positions", [])
+            snap["stock_count"] = stocks.get("count", 0)
+        else:
+            snap["stock_positions_error"] = stocks.get("error")
+    except Exception as e:
+        snap["stock_positions_error"] = str(e)
+
+    # 4) Option positions
+    try:
+        opts = get_option_positions(acct)
+        if opts.get("success"):
+            snap["option_positions"] = opts.get("positions", [])
+            snap["option_count"] = opts.get("count", 0)
+            snap["option_long_value"] = opts.get("total_long_value")
+            snap["option_short_liability"] = opts.get("total_short_liability")
+        else:
+            snap["option_positions_error"] = opts.get("error")
+    except Exception as e:
+        snap["option_positions_error"] = str(e)
+
+    # 5) Open stock orders
+    try:
+        orders = get_open_orders(acct)
+        if orders.get("success"):
+            snap["open_stock_orders"] = orders.get("orders", [])
+        else:
+            snap["open_stock_orders_error"] = orders.get("error")
+    except Exception as e:
+        snap["open_stock_orders_error"] = str(e)
+
+    # 6) Open option orders
+    try:
+        opt_orders = get_open_option_orders(acct)
+        if opt_orders.get("success"):
+            snap["open_option_orders"] = opt_orders.get("orders", [])
+        else:
+            snap["open_option_orders_error"] = opt_orders.get("error")
+    except Exception as e:
+        snap["open_option_orders_error"] = str(e)
+
+    # 7) Futures positions — optional, only if rh-futures stack reachable
+    try:
+        from rh_mcp.tools import scanners as _scanners
+        fp = _scanners.get_futures_positions()
+        if fp.get("success"):
+            snap["futures_positions"] = fp.get("positions", [])
+            snap["futures_count"] = fp.get("count", 0)
+        else:
+            snap["futures_note"] = fp.get("error", "futures unavailable")
+    except Exception as e:
+        snap["futures_note"] = f"futures unavailable: {e}"
+
+    return snap

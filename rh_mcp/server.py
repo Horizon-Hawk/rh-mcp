@@ -93,6 +93,15 @@ def get_account_status(account_number: str | None = None) -> dict:
 
 
 @mcp.tool()
+def get_full_snapshot(account_number: str | None = None) -> dict:
+    """ONE-CALL unified financial snapshot: BP, equity, all positions
+    (stock/option/futures), all open orders. Replaces 4-6 sequential calls when
+    you need a complete account view. Use for morning brief, capital check
+    before sizing, or any 'what do I own + what can I deploy' question."""
+    return account.get_full_snapshot(account_number)
+
+
+@mcp.tool()
 def get_settled_cash(account_number: str | None = None) -> dict:
     """Settled cash vs unsettled funds vs buying power for an account. Critical for cash accounts/IRAs — unsettled funds can buy but new shares are locked until T+1."""
     return account.get_settled_cash(account_number)
