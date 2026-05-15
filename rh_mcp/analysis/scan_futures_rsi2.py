@@ -63,6 +63,7 @@ INSTRUMENT_CONFIG: dict[str, dict] = {
             "label": "Gold (full)", "expected_yr_pnl": 4217},
     "MGC": {"action": "LONG_ONLY",  "point_value": 10.0,   "tier": "A",
             "label": "Micro Gold", "expected_yr_pnl": 1618,
+            "use_sma_filter": False,   # SMA filter hurts MGC edge per 2026-05-15 backtest
             "note": "Re-validated 2026-05-15 on real stitched 1m data: "
                     "BARE RSI<5 LONG (no SMA/vol filter), WR 64%, PF 1.50, "
                     "128 trades / 4.13y, 5 of 5 years positive, max DD $3,985"},
@@ -74,6 +75,7 @@ INSTRUMENT_CONFIG: dict[str, dict] = {
             "label": "Crude Oil", "expected_yr_pnl": 7057},
     "MCL": {"action": "LONG_ONLY",  "point_value": 100.0,  "tier": "B",
             "label": "Micro WTI Crude", "expected_yr_pnl": 900,
+            "use_sma_filter": False,   # SMA filter hurts MCL edge per 2026-05-15 backtest
             "note": "Validated 2026-05-15 on real stitched 1m data: "
                     "BARE RSI<5 LONG (no filters), WR 70%, PF 1.54, "
                     "138 trades / 4.43y. Phase 3.5 filters destroy edge — "
@@ -204,19 +206,28 @@ def analyze(
         tier = cfg.get("tier", "")
         actionable_gate = include_exploratory or tier != "EXPLORATORY"
 
-        if s["rsi_2"] < oversold_threshold and s["price"] > s["sma_200"]:
+        # Per-instrument SMA200 filter — defaults to True (Phase 3.5 spec) for
+        # backwards compat. MGC and MCL set this False per 2026-05-15 backtest:
+        # the SMA filter destroys their commodity-reversion edge.
+        use_sma = cfg.get("use_sma_filter", True)
+        long_trend_ok = (s["price"] > s["sma_200"]) if use_sma else True
+        short_trend_ok = (s["price"] < s["sma_200"]) if use_sma else True
+
+        if s["rsi_2"] < oversold_threshold and long_trend_ok:
             tag = "deep_oversold" if s["rsi_2"] < EXTREME_OVERSOLD else "oversold"
             actionable = _side_actionable(t, "long") and actionable_gate
             longs.append({
                 **s, "signal": "long_mean_revert", "tag": tag,
                 "group": _find_group(t), "actionable": actionable,
+                "filter_mode": "bare" if not use_sma else "sma_gated",
             })
-        elif s["rsi_2"] > overbought_threshold and s["price"] < s["sma_200"]:
+        elif s["rsi_2"] > overbought_threshold and short_trend_ok:
             tag = "deep_overbought" if s["rsi_2"] > EXTREME_OVERBOUGHT else "overbought"
             actionable = _side_actionable(t, "short") and actionable_gate
             shorts.append({
                 **s, "signal": "short_mean_revert", "tag": tag,
                 "group": _find_group(t), "actionable": actionable,
+                "filter_mode": "bare" if not use_sma else "sma_gated",
             })
 
     longs.sort(key=lambda x: x["rsi_2"])
