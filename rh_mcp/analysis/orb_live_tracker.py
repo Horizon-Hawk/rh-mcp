@@ -459,20 +459,135 @@ def poll_once(state: dict | None, root: str = "MNQ") -> dict:
     return state
 
 
+def _next_session_window(start_hhmm: tuple[int, int],
+                         end_hhmm: tuple[int, int]) -> tuple[datetime, datetime]:
+    """Return (start, end) for the next session window in ET.
+
+    If today's end has passed, rolls to tomorrow. Skips weekends (Sat/Sun).
+    Holidays aren't filtered — the tracker just polls a thin tape, no harm.
+    """
+    now = _now_et()
+    start = now.replace(hour=start_hhmm[0], minute=start_hhmm[1],
+                        second=0, microsecond=0)
+    end = now.replace(hour=end_hhmm[0], minute=end_hhmm[1],
+                      second=0, microsecond=0)
+    if end <= now:
+        start += timedelta(days=1)
+        end += timedelta(days=1)
+    while start.weekday() >= 5:  # Sat=5, Sun=6
+        start += timedelta(days=1)
+        end += timedelta(days=1)
+    return start, end
+
+
+def _is_globex_open(now_et: datetime) -> bool:
+    """CME Globex equity futures session: Sun 18:00 ET → Fri 17:00 ET.
+    Mon-Thu daily maintenance break 17:00-18:00 ET."""
+    et = now_et.astimezone(ET)
+    wd = et.weekday()  # Mon=0..Sun=6
+    h = et.hour
+    if wd == 5:           # Saturday — closed all day
+        return False
+    if wd == 6:           # Sunday — opens 18:00 ET
+        return h >= 18
+    if wd == 4:           # Friday — closes 17:00 ET
+        return h < 17
+    if h == 17:           # Mon-Thu maintenance break
+        return False
+    return True
+
+
+def _next_globex_open(now_et: datetime) -> datetime:
+    """Next Globex re-open time after now_et."""
+    et = now_et.astimezone(ET)
+    wd = et.weekday()
+    h = et.hour
+    # Saturday → next day (Sunday) 18:00 ET
+    if wd == 5:
+        return (et + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    # Sunday before 18:00 → today 18:00 ET
+    if wd == 6 and h < 18:
+        return et.replace(hour=18, minute=0, second=0, microsecond=0)
+    # Friday at/after 17:00 → next Sunday 18:00 ET (+2 days)
+    if wd == 4 and h >= 17:
+        return (et + timedelta(days=2)).replace(hour=18, minute=0, second=0, microsecond=0)
+    # Mon-Thu 17:00 maintenance break → today 18:00 ET
+    if 0 <= wd <= 3 and h == 17:
+        return et.replace(hour=18, minute=0, second=0, microsecond=0)
+    # Already open — return now
+    return et
+
+
+def run_daemon(root: str = "MNQ",
+               poll_secs: int = POLL_SECS) -> None:
+    """Continuous Globex-aware polling daemon.
+
+    Polls 24/5 from Sun 18:00 ET → Fri 17:00 ET with the standard
+    Mon-Thu 17-18 ET maintenance break. Sleeps through weekends.
+    `poll_once` handles date-rollover automatically so the OR/breakout
+    state resets fresh each midnight ET.
+    """
+    state = _load_state() or _new_state(_now_et(), root)
+    last_overnight_fetch_date: str | None = None
+
+    while True:
+        now = _now_et()
+        if not _is_globex_open(now):
+            wake = _next_globex_open(now)
+            wait_s = (wake - now).total_seconds()
+            print(f"[orb_live_tracker] Globex closed — sleeping {wait_s:.0f}s "
+                  f"until {wake.strftime('%a %H:%M ET')}", file=sys.stderr)
+            time.sleep(wait_s)
+            continue
+
+        today_iso = now.astimezone(ET).date().isoformat()
+        if last_overnight_fetch_date != today_iso and state.get("on_high") is None:
+            try:
+                on_levels = fetch_overnight_levels(root=root)
+                state["on_high"] = on_levels.get("on_high")
+                state["on_low"] = on_levels.get("on_low")
+                state["on_fetch_meta"] = {
+                    k: v for k, v in on_levels.items()
+                    if k not in ("on_high", "on_low")
+                }
+                _save_state(state)
+                last_overnight_fetch_date = today_iso
+                if on_levels.get("on_high") is not None:
+                    print(f"[orb_live_tracker] overnight S/R: "
+                          f"high={on_levels['on_high']} low={on_levels['on_low']}",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[orb_live_tracker] overnight fetch error: {e} (continuing)",
+                      file=sys.stderr)
+
+        state = poll_once(state, root=root)
+        time.sleep(poll_secs)
+
+
+def run_daemon_weekday(root: str = "MNQ",
+                       start_hhmm: tuple[int, int] = (9, 25),
+                       end_hhmm: tuple[int, int] = (11, 5),
+                       poll_secs: int = POLL_SECS) -> None:
+    """Legacy weekday-window daemon — runs one session per weekday, forever.
+
+    Kept for back-compat. Default `main()` uses run_daemon (Globex-continuous).
+    """
+    while True:
+        run_session(root, start_hhmm, end_hhmm, poll_secs)
+
+
 def run_session(root: str = "MNQ",
                 start_hhmm: tuple[int, int] = (9, 25),
                 end_hhmm: tuple[int, int] = (11, 5),
                 poll_secs: int = POLL_SECS) -> None:
-    """Run the live tracker as a foreground daemon during market hours.
+    """Run the live tracker as a foreground daemon for one session.
 
-    Sleeps until `start_hhmm`, polls every `poll_secs` until `end_hhmm`,
-    then exits. State is persisted to STATE_PATH after every tick.
+    Sleeps until the next valid session window (rolling forward over weekends),
+    polls every `poll_secs` until `end_hhmm`, then exits. State is persisted
+    to STATE_PATH after every tick.
     """
+    today_start, today_end = _next_session_window(start_hhmm, end_hhmm)
     now = _now_et()
-    today_start = now.replace(hour=start_hhmm[0], minute=start_hhmm[1],
-                              second=0, microsecond=0)
-    today_end = now.replace(hour=end_hhmm[0], minute=end_hhmm[1],
-                            second=0, microsecond=0)
 
     if now < today_start:
         wait_s = (today_start - now).total_seconds()
@@ -534,11 +649,14 @@ def main():
     p.add_argument("--root", default="MNQ", help="Futures root (default MNQ)")
     p.add_argument("--once", action="store_true",
                    help="Single poll then exit (for testing)")
+    p.add_argument("--single-day", action="store_true",
+                   help="Run one weekday session then exit (uses --start/--end)")
+    p.add_argument("--weekday-daemon", action="store_true",
+                   help="Legacy: loop one weekday session at a time (uses --start/--end)")
     p.add_argument("--start", default="4:00",
-                   help="Start time HH:MM ET (default 4:00 — captures full premarket "
-                        "for pm_high/pm_low used by scan_orb_mnq's S/R gate)")
+                   help="Start HH:MM ET for --single-day/--weekday-daemon modes (default 4:00)")
     p.add_argument("--end", default="11:05",
-                   help="End time HH:MM ET (default 11:05)")
+                   help="End HH:MM ET for --single-day/--weekday-daemon modes (default 11:05)")
     args = p.parse_args()
 
     if args.once:
@@ -549,7 +667,13 @@ def main():
 
     sh, sm = (int(x) for x in args.start.split(":"))
     eh, em = (int(x) for x in args.end.split(":"))
-    run_session(root=args.root, start_hhmm=(sh, sm), end_hhmm=(eh, em))
+    if args.single_day:
+        run_session(root=args.root, start_hhmm=(sh, sm), end_hhmm=(eh, em))
+    elif args.weekday_daemon:
+        run_daemon_weekday(root=args.root, start_hhmm=(sh, sm), end_hhmm=(eh, em))
+    else:
+        # Default: Globex-continuous daemon (Sun 18:00 ET → Fri 17:00 ET)
+        run_daemon(root=args.root)
 
 
 if __name__ == "__main__":
