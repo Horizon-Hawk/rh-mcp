@@ -37,15 +37,37 @@ _UUID_CACHE_FILE = os.environ.get(
 def _futures_headers(extra: dict | None = None) -> dict | None:
     """Build per-request headers for futures endpoints.
 
-    If RH_FUTURES_BEARER_TOKEN is set, injects a fresh Bearer override + required
-    custom headers (rh-contract-protected, x-robinhood-client-platform). This
-    bypasses the stale rh.login() session token when robin_stocks hasn't
-    refreshed for the ceres namespace.
+    Token resolution priority (validated 2026-05-15 — same token works for
+    both stock and futures, so single source of truth is the OAuth pickle):
+      1. RH_FUTURES_BEARER_TOKEN env var (legacy manual override path)
+      2. robin_stocks SESSION Authorization header (kept fresh by auth.py's
+         refresh_access_token() + 12h refresh thread)
+      3. Direct read of ~/.tokens/robinhood.pickle (fallback)
 
-    Returns None when no override is set AND no extra headers passed (so
-    requests falls back to session defaults).
+    Returns None only when no token is available AND no extra headers passed.
     """
-    token = os.environ.get("RH_FUTURES_BEARER_TOKEN")
+    token = os.environ.get("RH_FUTURES_BEARER_TOKEN", "").strip()
+    if not token:
+        # Try the shared robin_stocks SESSION — auth.refresh_access_token() keeps
+        # this header current after every refresh / re-login.
+        try:
+            session_auth = rhh.SESSION.headers.get("Authorization", "")
+            if session_auth.startswith("Bearer "):
+                token = session_auth[len("Bearer "):].strip()
+        except Exception:
+            pass
+    if not token:
+        # Final fallback: read pickle directly (handles cold-start before login())
+        try:
+            import pickle
+            from pathlib import Path
+            p = Path.home() / ".tokens" / "robinhood.pickle"
+            if p.exists():
+                data = pickle.loads(p.read_bytes())
+                token = (data.get("access_token") or "").strip()
+        except Exception:
+            pass
+
     if not token and not extra:
         return None
     h: dict = {}
@@ -57,6 +79,48 @@ def _futures_headers(extra: dict | None = None) -> dict | None:
     if extra:
         h.update(extra)
     return h
+
+
+def _futures_request(method: str, url: str, **kwargs):
+    """HTTP wrapper that auto-refreshes on 401/403 and retries once.
+
+    Use this for any /ceres/v1/* or /marketdata/futures/* call that goes
+    through `rhh.SESSION.<method>` today. Transparently handles token expiry
+    by calling `auth.refresh_access_token()` (no MFA, fast) with a fallback
+    to `auth.force_relogin()` if the refresh_token itself is invalid.
+
+    The auth.py 401 hook raises AuthExpired *before* requests returns the
+    response — catch it here so we get to do the retry.
+    """
+    if "headers" not in kwargs or kwargs["headers"] is None:
+        kwargs["headers"] = _futures_headers()
+    kwargs.setdefault("timeout", 15)
+
+    from rh_mcp import auth as _auth
+
+    try:
+        resp = rhh.SESSION.request(method, url, **kwargs)
+    except _auth.AuthExpired:
+        resp = None  # 401 was intercepted by the hook
+    else:
+        if resp.status_code not in (401, 403):
+            return resp
+
+    # Auth expired — try fast refresh first, full re-login as fallback
+    result = _auth.refresh_access_token()
+    if not result.get("success"):
+        _auth._log.warning(f"_futures_request refresh failed: {result.get('error')} "
+                           f"— falling back to force_relogin")
+        relogin = _auth.force_relogin()
+        if not relogin.get("success") and resp is not None:
+            return resp  # surface the original 401 — both paths failed
+
+    # Rebuild headers with the fresh token and retry once
+    kwargs["headers"] = _futures_headers(
+        {k: v for k, v in (kwargs.get("headers") or {}).items()
+         if k.lower() not in ("authorization",)}
+    )
+    return rhh.SESSION.request(method, url, **kwargs)
 
 
 def _load_uuid_cache() -> dict[str, str]:
@@ -222,7 +286,7 @@ def lookup_by_symbol(symbol: str) -> dict | None:
     sym = symbol if symbol.startswith("/") else f"/{symbol}"
     url = f"https://api.robinhood.com/marketdata/futures/quotes/v1/?symbols={sym}"
     try:
-        r = rhh.SESSION.get(url, timeout=10, headers=_futures_headers())
+        r = _futures_request("GET", url, timeout=10)
     except Exception:
         return None
     if r.status_code != 200:
@@ -362,7 +426,7 @@ def get_quotes(ids: str | Iterable[str]) -> dict:
     else:
         ids_param = ",".join(ids)
     url = f"https://api.robinhood.com/marketdata/futures/quotes/v1/?ids={ids_param}"
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -379,7 +443,7 @@ def list_accounts() -> list[dict]:
     a duplicate for different status). Each account has its own UUID `id` field
     used as the path scope for positions/orders/balances.
     """
-    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/", timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", f"{CERES_BASE}/accounts/", timeout=15)
     r.raise_for_status()
     return r.json().get("results", []) or []
 
@@ -402,7 +466,7 @@ def get_default_account_id() -> str | None:
     # Multi-account: pick the one with recent orders. Fall back to first if both empty.
     for a in active:
         try:
-            r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{a['id']}/orders/", timeout=10, headers=_futures_headers())
+            r = _futures_request("GET", f"{CERES_BASE}/accounts/{a['id']}/orders/", timeout=10)
             if r.status_code == 200 and r.json().get("results"):
                 return a["id"]
         except Exception:
@@ -416,7 +480,7 @@ def get_positions(account_id: str | None = None) -> list[dict]:
         account_id = get_default_account_id()
     if not account_id:
         return []
-    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/positions/", timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", f"{CERES_BASE}/accounts/{account_id}/positions/", timeout=15)
     r.raise_for_status()
     return r.json().get("results", []) or []
 
@@ -440,7 +504,7 @@ def get_orders(
         f"&contractType={contract_type}"
         f"&rhsAccountNumber={rhs_account_number}"
     )
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     rows = r.json().get("results", []) or []
     return rows
@@ -454,7 +518,7 @@ def get_orders_account_scoped(account_id: str | None = None, limit: int = 50) ->
         account_id = get_default_account_id()
     if not account_id:
         return []
-    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/orders/", timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", f"{CERES_BASE}/accounts/{account_id}/orders/", timeout=15)
     r.raise_for_status()
     rows = r.json().get("results", []) or []
     return rows[:limit] if limit else rows
@@ -470,7 +534,7 @@ def get_aggregated_positions(account_id: str | None = None) -> list[dict]:
         account_id = get_default_account_id()
     if not account_id:
         return []
-    r = rhh.SESSION.get(f"{CERES_BASE}/accounts/{account_id}/aggregated_positions", timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", f"{CERES_BASE}/accounts/{account_id}/aggregated_positions", timeout=15)
     r.raise_for_status()
     return r.json().get("results", []) or []
 
@@ -487,7 +551,7 @@ def get_order_validation_rules(account_id: str | None = None) -> dict:
     if not account_id:
         return {}
     url = f"{CERES_BASE}/accounts/{account_id}/presubmit_order_validation"
-    r = rhh.SESSION.get(url, timeout=10, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -501,7 +565,7 @@ def get_order_detail(order_id: str, asset_type: str = "FUTURES", account_number:
         f"https://api.robinhood.com/wormhole/bw/orders/{order_id}"
         f"?assetType={asset_type}&rhsAccountNumber={account_number}"
     )
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -514,7 +578,7 @@ def get_recent_orders_unified(account_number: str = "588784215") -> list[dict]:
     Useful for tracking new fills/rejects across the whole account at once.
     """
     url = f"https://api.robinhood.com/wormhole/bw/orders/recent?accountNumber={account_number}"
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     return r.json().get("results", []) or []
 
@@ -611,7 +675,7 @@ def place_order(
     }
 
     url = f"{CERES_BASE.replace('/v1', '/v1')}/orders"  # /ceres/v1/orders
-    r = rhh.SESSION.post(url, json=body, headers=_futures_headers(headers), timeout=15)
+    r = _futures_request("POST", url, json=body, headers=_futures_headers(headers), timeout=15)
     # Don't raise_for_status — we want to return the response even on 400 (RH
     # rejection includes useful error detail). Caller checks status_code / derivedState.
     try:
@@ -917,7 +981,7 @@ def replace_order(
         "x-robinhood-client-platform": "black-widow",
     }
     url = f"{CERES_BASE}/orders/{old_order_id}/replace"
-    r = rhh.SESSION.post(url, json=body, headers=_futures_headers(headers), timeout=15)
+    r = _futures_request("POST", url, json=body, headers=_futures_headers(headers), timeout=15)
     try:
         payload = r.json()
     except Exception:
@@ -977,7 +1041,7 @@ def cancel_order(order_id: str, account_id: str | None = None) -> dict:
         "x-robinhood-client-platform": "black-widow",
     }
     url = f"{CERES_BASE}/orders/{order_id}/cancel"
-    r = rhh.SESSION.post(url, json={"accountId": account_id}, headers=_futures_headers(headers), timeout=15)
+    r = _futures_request("POST", url, json={"accountId": account_id}, headers=_futures_headers(headers), timeout=15)
     try:
         payload = r.json()
     except Exception:
@@ -1017,7 +1081,7 @@ def flatten_position(contract_uuid: str, account_id: str | None = None) -> dict:
         "x-robinhood-client-platform": "black-widow",
     }
     url = f"{CERES_BASE}/accounts/{account_id}/flatten_position"
-    r = rhh.SESSION.post(url, json=body, headers=_futures_headers(headers), timeout=15)
+    r = _futures_request("POST", url, json=body, headers=_futures_headers(headers), timeout=15)
     try:
         payload = r.json()
     except Exception:
@@ -1138,7 +1202,7 @@ def get_buying_power_breakdown(account_number: str = "588784215") -> dict:
     'None', 'Futures', etc. Useful for showing where capacity is being used.
     """
     url = f"https://api.robinhood.com/accounts/{account_number}/buying_power_breakdown"
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     return r.json()
 
@@ -1150,7 +1214,7 @@ def get_contract_quantity(contract_uuid: str, account_id: str | None = None) -> 
     if not account_id:
         return {}
     url = f"{CERES_BASE}/accounts/{account_id}/contract_quantities?contractIds={contract_uuid}"
-    r = rhh.SESSION.get(url, timeout=15, headers=_futures_headers())
+    r = _futures_request("GET", url, timeout=15)
     r.raise_for_status()
     results = r.json().get("results", []) or []
     return results[0] if results else {}
