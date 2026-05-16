@@ -142,7 +142,10 @@ def send_ntfy(title: str, body: str, priority: str = "default", tags: str = "") 
     if not NTFY_TOPIC:
         return
     try:
-        headers = {"Title": title, "Priority": priority}
+        # HTTP/1.1 headers are latin-1; strip non-ASCII so emojis/braille can't
+        # poison the request. The Tags header below renders emoji natively on the phone.
+        safe_title = title.encode("ascii", errors="ignore").decode("ascii").strip() or "alert"
+        headers = {"Title": safe_title, "Priority": priority}
         if tags:
             headers["Tags"] = tags
         req = urllib.request.Request(
@@ -183,14 +186,20 @@ def _claude_hwnds_by_process() -> set:
     """Fallback: find Claude Code window HWNDs via the node.exe process tree.
     Returns set of HWND ints owned by any node.exe process whose command line
     references claude. Works even when title doesn't match Braille/substring.
+
+    Multi-Claude disambiguation: if ANY claude.exe process has the env var
+    CLAUDE_TRADING_INSTANCE set, restrict the search to ONLY marked instances.
+    This lets the user run a "trading Claude" via launch_trading.ps1 separately
+    from other Claude sessions, without alerts spraying into the wrong window.
+    Falls back to unfiltered behavior when no marked instance is found.
     """
     try:
         import psutil
     except ImportError:
         return set()
-    # Collect PIDs of claude/node processes (Claude Code ships as claude.exe on
-    # Windows but legacy installs use node.exe with claude in cmdline)
-    target_pids = set()
+
+    # First pass: collect all candidate claude PIDs and note which are marked.
+    candidate_pids: list[tuple[int, bool]] = []  # (pid, is_marked)
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
@@ -201,21 +210,38 @@ def _claude_hwnds_by_process() -> set:
             )
             if not is_claude_proc:
                 continue
-            target_pids.add(proc.info["pid"])
-            # also include parent terminal (Windows Terminal wraps it)
+            # Probe env var. psutil.Process.environ() works on Windows for
+            # processes owned by the calling user; raises on permission denial.
+            is_marked = False
             try:
-                p = psutil.Process(proc.info["pid"])
-                while p.ppid() > 0:
-                    p = psutil.Process(p.ppid())
-                    pname = (p.name() or "").lower()
-                    if pname in ("windowsterminal.exe", "openconsole.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
-                        target_pids.add(p.pid)
-                    else:
-                        break
+                env = psutil.Process(proc.info["pid"]).environ()
+                is_marked = env.get("CLAUDE_TRADING_INSTANCE") == "1"
             except Exception:
                 pass
+            candidate_pids.append((proc.info["pid"], is_marked))
         except Exception:
             continue
+
+    # If any candidate is marked, restrict to marked-only. Else keep all.
+    any_marked = any(m for _, m in candidate_pids)
+    if any_marked:
+        candidate_pids = [(p, m) for p, m in candidate_pids if m]
+
+    target_pids = set()
+    for pid, _ in candidate_pids:
+        target_pids.add(pid)
+        # also include parent terminal (Windows Terminal wraps it)
+        try:
+            p = psutil.Process(pid)
+            while p.ppid() > 0:
+                p = psutil.Process(p.ppid())
+                pname = (p.name() or "").lower()
+                if pname in ("windowsterminal.exe", "openconsole.exe", "cmd.exe", "powershell.exe", "pwsh.exe"):
+                    target_pids.add(p.pid)
+                else:
+                    break
+        except Exception:
+            pass
     if not target_pids:
         return set()
     # Enumerate all windows, find ones owned by target PIDs
@@ -241,10 +267,22 @@ def _claude_hwnds_by_process() -> set:
     user32.EnumWindows(EnumWindowsProc(cb), 0)
     # Windows Terminal / ConPTY host: claude.exe owns only hidden console hwnds.
     # The user-visible window belongs to WindowsTerminal.exe (or wezterm/etc).
-    # Only inject when that host window is the foreground — avoids typing into
-    # the wrong tab.
+    # Two-tier strategy:
+    #   1. If a terminal-host window is currently foreground, prefer it
+    #      (highest confidence — user is interacting with that exact window).
+    #   2. Otherwise (e.g., inject fires while user is in another app),
+    #      include EVERY visible terminal-host window so we type into
+    #      whichever one is hosting Claude. Risk: if user has multiple
+    #      terminal windows open, we might pick the wrong one — but the
+    #      alternative is dropping the inject entirely. inbox.json still
+    #      provides a durable fallback.
+    TERMINAL_HOST_NAMES = (
+        "windowsterminal.exe", "wt.exe", "openconsole.exe",
+        "wezterm-gui.exe", "alacritty.exe", "conhost.exe",
+    )
     try:
         fg_hwnd = user32.GetForegroundWindow()
+        fg_is_terminal = False
         if fg_hwnd:
             fg_pid = wintypes.DWORD()
             GetWindowThreadProcessId(fg_hwnd, ctypes.byref(fg_pid))
@@ -252,8 +290,34 @@ def _claude_hwnds_by_process() -> set:
                 fg_name = (psutil.Process(fg_pid.value).name() or "").lower()
             except Exception:
                 fg_name = ""
-            if fg_name in ("windowsterminal.exe", "wezterm-gui.exe", "alacritty.exe"):
+            if fg_name in TERMINAL_HOST_NAMES:
                 matches.add(int(fg_hwnd))
+                fg_is_terminal = True
+
+        # Foreground isn't a terminal — enumerate all visible terminal-host
+        # windows and include them. Worst case: typing lands in the wrong tab;
+        # ntfy still got the alert and inbox.json holds the message.
+        if not fg_is_terminal:
+            terminal_pids = set()
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    pname = (proc.info.get("name") or "").lower()
+                    if pname in TERMINAL_HOST_NAMES:
+                        terminal_pids.add(proc.info["pid"])
+                except Exception:
+                    continue
+
+            def _term_cb(hwnd, _lparam):
+                try:
+                    pid = wintypes.DWORD()
+                    GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value in terminal_pids and IsWindowVisible(hwnd):
+                        if user32.GetWindowTextLengthW(hwnd) > 0:
+                            matches.add(int(hwnd))
+                except Exception:
+                    pass
+                return True
+            user32.EnumWindows(EnumWindowsProc(_term_cb), 0)
     except Exception:
         pass
     return matches
@@ -401,11 +465,27 @@ def _focus_and_click(win) -> bool:
 
 
 def inject_to_claude(message: str) -> bool:
-    """Find Claude window, focus, paste message, send Enter.
+    """Emit a SIGNAL line to stdout. Parent Claude (which launched rh_monitor
+    via run_in_background=True) sees this line through the harness's
+    background-task notification stream — no pyautogui keystroke routing,
+    no window-finding heuristics. Being Claude's subprocess IS the routing.
 
-    On failure, persist to alert_inbox.json so the message isn't lost.
-    On success, drain any backlog as a combined follow-up.
+    Also persists every signal to alert_inbox.json as a durable trail
+    (useful for post-session reconstruction and replay).
+
+    The previous implementation paste-injected via pyautogui — kept as
+    `_legacy_inject_to_claude()` below for documentation; no longer called.
     """
+    single_line = " | ".join(ln.strip() for ln in message.splitlines() if ln.strip())
+    print(f"SIGNAL :: {single_line}", flush=True)
+    _append_inbox(message)
+    log.info(f"Signal emitted: {single_line[:80]}")
+    return True
+
+
+def _legacy_inject_to_claude(message: str) -> bool:
+    """Pre-2026-05-15 pyautogui-paste injection. Kept for reference only;
+    superseded by the subprocess-stdout pattern in `inject_to_claude`."""
     win = find_claude_window()
     if not win:
         log.warning("No Claude Code window found. Persisting to inbox for later.")
@@ -418,18 +498,6 @@ def inject_to_claude(message: str) -> bool:
         _append_inbox(message)
         return False
     log.info(f"Injected -> Claude: {message[:80]}")
-    backlog = _read_inbox()
-    if backlog:
-        time.sleep(1.5)
-        combined = f"BACKLOG ({len(backlog)} missed alerts): " + " || ".join(
-            f"[{e.get('ts', '?')[11:19]}] {e.get('message', '')[:200]}" for e in backlog
-        )
-        win2 = find_claude_window()
-        if win2 and _focus_and_click(win2) and _do_paste_and_enter(combined[:3000]):
-            _clear_inbox()
-            log.info(f"Drained {len(backlog)} backlogged messages")
-        else:
-            log.warning(f"Backlog drain failed; {len(backlog)} messages remain in inbox")
     return True
 
 
